@@ -1,0 +1,29 @@
+Note: Unnecessary use of -X or --request, GET is already inferred.
+* Host localhost:5001 was resolved.
+* IPv6: ::1
+* IPv4: 127.0.0.1
+  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
+                                 Dload  Upload   Total   Spent    Left  Speed
+  0     0    0     0    0     0      0      0 --:--:-- --:--:-- --:--:--     0*   Trying [::1]:5001...
+* connect to ::1 port 5001 from ::1 port 61537 failed: Connection refused
+*   Trying 127.0.0.1:5001...
+* Connected to localhost (127.0.0.1) port 5001
+> GET /api/contacts HTTP/1.1
+> Host: localhost:5001
+> User-Agent: curl/8.7.1
+> Accept: */*
+> Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJmcmVzaCI6ZmFsc2UsImlhdCI6MTc3MDczNDI5NCwianRpIjoiMzBjMTc2Y2EtYmZhZS00Mjc4LTgyYjItMWJiZTExNzAzNGI0IiwidHlwZSI6ImFjY2VzcyIsInN1YiI6ImJmZGMwNDkxLTVjZjItNDM4Ni05ZmU0LWM0NmMwYTQ1YTczMiIsIm5iZiI6MTc3MDczNDI5NCwiY3NyZiI6IjllMjkwZWIwLTA5YjUtNDg4My04NzE0LTNjMjc1ODkzMTZmNSIsImV4cCI6MTc3MDczNTE5NH0.Jed0SbqOygq-WqtRXwfqYrvbl3cvKfmCU65qHhn5HQQ
+> 
+* Request completely sent off
+< HTTP/1.1 200 OK
+< Server: Werkzeug/3.1.5 Python/3.13.9
+< Date: Tue, 10 Feb 2026 14:39:06 GMT
+< Content-Type: application/json
+< Content-Length: 37
+< Access-Control-Allow-Origin: *
+< Connection: close
+< 
+{ [37 bytes data]
+100    37  100    37    0     0  12914      0 --:--:-- --:--:-- --:--:-- 18500
+* Closing connection
+{"count":0,"data":[],"success":true}

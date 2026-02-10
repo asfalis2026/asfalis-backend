@@ -49,9 +49,26 @@ def create_app(config_class=Config):
     def health_check():
         return jsonify({"status": "healthy", "service": "raksha-backend"}), 200
 
-    # Global Error Handlers (Placeholder)
+    
+    # Global Error Handlers
+    @app.errorhandler(400)
+    def bad_request(e):
+        return jsonify(success=False, error={"code": "VALIDATION_ERROR", "message": str(e.description if hasattr(e, 'description') else e)}), 400
+
+    @app.errorhandler(401)
+    def unauthorized(e):
+        return jsonify(success=False, error={"code": "UNAUTHORIZED", "message": "Authentication required"}), 401
+
     @app.errorhandler(404)
     def not_found(e):
         return jsonify(success=False, error={"code": "NOT_FOUND", "message": "Resource not found"}), 404
+
+    @app.errorhandler(429)
+    def rate_limited(e):
+        return jsonify(success=False, error={"code": "RATE_LIMITED", "message": "Too many requests. Try again later."}), 429
+
+    @app.errorhandler(500)
+    def internal_error(e):
+        return jsonify(success=False, error={"code": "INTERNAL_ERROR", "message": "An unexpected error occurred"}), 500
 
     return app

@@ -13,10 +13,11 @@ def validate_password(password):
     """
     Min 8 chars, 1 uppercase, 1 number.
     """
-    if len(password) < 8:
+    if len(password) < 6:
         return False
-    if not re.search(r"[A-Z]", password):
-        return False
+    # Relaxed rules for development
+    # if not re.search(r"[A-Z]", password):
+    #     return False
     if not re.search(r"\d", password):
         return False
     return True

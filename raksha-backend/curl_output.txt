@@ -1,0 +1,29 @@
+Note: Unnecessary use of -X or --request, GET is already inferred.
+* Host localhost:5001 was resolved.
+* IPv6: ::1
+* IPv4: 127.0.0.1
+  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
+                                 Dload  Upload   Total   Spent    Left  Speed
+  0     0    0     0    0     0      0      0 --:--:-- --:--:-- --:--:--     0*   Trying [::1]:5001...
+* connect to ::1 port 5001 from ::1 port 61486 failed: Connection refused
+*   Trying 127.0.0.1:5001...
+* Connected to localhost (127.0.0.1) port 5001
+> GET /api/contacts HTTP/1.1
+> Host: localhost:5001
+> User-Agent: curl/8.7.1
+> Accept: */*
+> Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJmcmVzaCI6ZmFsc2UsImlhdCI6MTc3MDcyNjk3NCwianRpIjoiNDU4OTA3MjctNjc2My00OWNiLTg1NjgtMWRlYThkZTcwMzk1IiwidHlwZSI6ImFjY2VzcyIsInN1YiI6ImJmZGMwNDkxLTVjZjItNDM4Ni05ZmU0LWM0NmMwYTQ1YTczMiIsImV4cCI6MTc3MDcyNzg3NH0.rSxLVm6rtWK24vFkmnhbbRwkJpOUZCkz7zAInjckkqo
+> 
+* Request completely sent off
+< HTTP/1.1 422 UNPROCESSABLE ENTITY
+< Server: Werkzeug/3.1.5 Python/3.13.9
+< Date: Tue, 10 Feb 2026 14:34:22 GMT
+< Content-Type: application/json
+< Content-Length: 40
+< Access-Control-Allow-Origin: *
+< Connection: close
+< 
+{ [40 bytes data]
+100    40  100    40    0     0  29347      0 --:--:-- --:--:-- --:--:-- 40000
+* Closing connection
+{"msg":"Signature verification failed"}

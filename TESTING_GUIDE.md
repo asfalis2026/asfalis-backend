@@ -21,7 +21,22 @@ curl -X POST "$API_URL/auth/register/email" \
   -d '{
     "email": "test@example.com",
     "password": "password123",
-    "full_name": "Test User"
+    "full_name": "Test User",
+    "country": "India"
+  }'
+```
+
+*> Note: This will send a 6-digit OTP to your email.*
+
+### Verify OTP (Get Token)
+Check your email (or server logs) for the OTP, then verify it:
+
+```bash
+curl -X POST "$API_URL/auth/verify-email-otp" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "email": "test@example.com",
+    "otp_code": "123456"
   }'
 ```
 

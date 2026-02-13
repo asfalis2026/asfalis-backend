@@ -1,5 +1,5 @@
 
-FROM python:3.13-slim
+FROM python:3.12-slim
 
 WORKDIR /app
 
@@ -10,4 +10,4 @@ COPY . .
 
 EXPOSE 5000
 
-CMD ["gunicorn", "--worker-class", "eventlet", "-w", "1", "-b", "0.0.0.0:5000", "wsgi:app"]
+CMD gunicorn --worker-class eventlet -w 1 --bind 0.0.0.0:${PORT:-5000} wsgi:app

@@ -5,6 +5,7 @@ class EmailRegisterSchema(Schema):
     full_name = fields.Str(required=True, validate=validate.Length(min=2))
     email = fields.Email(required=True)
     password = fields.Str(required=True, validate=validate.Length(min=8))
+    country = fields.Str(required=True)
 
 class EmailLoginSchema(Schema):
     email = fields.Email(required=True)
@@ -13,9 +14,13 @@ class EmailLoginSchema(Schema):
 class PhoneLoginSchema(Schema):
     phone = fields.Str(required=True, validate=validate.Length(min=10))
 
+class VerifyEmailOTPSchema(Schema):
+    email = fields.Email(required=True)
+    otp_code = fields.Str(required=True, validate=validate.Length(equal=6))
+
 class VerifyOTPSchema(Schema):
     phone = fields.Str(required=True, validate=validate.Length(min=10))
-    otp_code = fields.Str(required=True, validate=validate.Length(equal=4))
+    otp_code = fields.Str(required=True, validate=validate.Length(equal=6))
 
 class RefreshTokenSchema(Schema):
     refresh_token = fields.Str(required=True)

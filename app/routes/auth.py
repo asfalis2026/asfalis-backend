@@ -3,12 +3,14 @@ from flask import Blueprint, request, jsonify
 from app.extensions import db, jwt, limiter
 from app.models.user import User
 from app.models.settings import UserSettings
+from app.models.trusted_contact import TrustedContact
+from app.services.email_service import send_otp_email
 from app.utils.validators import validate_password, validate_phone
 from app.utils.otp import generate_otp, store_otp, verify_otp
 from app.schemas.auth_schema import (
     EmailRegisterSchema, EmailLoginSchema, PhoneLoginSchema, 
     VerifyOTPSchema, RefreshTokenSchema, ResendOtpSchema,
-    ForgotPasswordSchema, GoogleLoginSchema
+    ForgotPasswordSchema, GoogleLoginSchema, VerifyEmailOTPSchema
 )
 from flask_jwt_extended import (
     create_access_token, create_refresh_token, jwt_required, 
@@ -36,9 +38,56 @@ def register_email():
 
     hashed_pw = bcrypt.hashpw(data['password'].encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
 
+    # Basic mapping, can be expanded or moved to a utility/constants file
+    # Expanded emergency numbers list
+    emergency_numbers = {
+        "India": "112",
+        "United States": "911",
+        "United Kingdom": "999",
+        "Australia": "000",
+        "Canada": "911",
+        "China": "110",
+        "Japan": "119",
+        "Brazil": "190",
+        "South Africa": "10111",
+        "France": "112",
+        "Germany": "112",
+        "Mexico": "911",
+        "United Arab Emirates": "999",
+        "South Korea": "112",
+        "Russia": "112",
+        "USA": "911", # Keeping common alias
+        "UK": "999",   # Keeping common alias
+        "Spain": "112",
+        "Italy": "112",
+        "Singapore": "995",
+        "New Zealand": "111",
+        "Israel": "100",
+        "Pakistan": "15",
+        "Nigeria": "112",
+        "Argentina": "911",
+        "Switzerland": "112",
+        "Netherlands": "112",
+        "Sweden": "112",
+        "Norway": "112",
+        "Greece": "112",
+        "Ireland": "112",
+        "Portugal": "112",
+        "Turkey": "112",
+        "Saudi Arabia": "999",
+        "Egypt": "122",
+        "Indonesia": "112",
+        "Thailand": "191",
+        "Malaysia": "999",
+        "Philippines": "911",
+        "Vietnam": "113",
+    }
+    emergency_number = emergency_numbers.get(data.get('country', ''), "112") # Default to 112
+
     new_user = User(
         full_name=data['full_name'],
         email=data['email'],
+        country=data['country'],
         password_hash=hashed_pw,
         auth_provider='email',
         is_verified=False
@@ -47,20 +96,57 @@ def register_email():
     db.session.flush() # Get ID
 
     # Create default settings
-    default_settings = UserSettings(user_id=new_user.id)
+    default_settings = UserSettings(user_id=new_user.id, emergency_number=emergency_number)
     db.session.add(default_settings)
     
+    # Generate and Send OTP
+    otp_code = generate_otp(length=6)
+    store_otp(email=new_user.email, otp_code=otp_code, purpose='email_verification')
+    
+    email_sent = send_otp_email(new_user.email, otp_code)
+    
+    if not email_sent:
+        # Should we rollback? For now log and continue, user can resend
+        print(f"Failed to send OTP to {new_user.email}")
+        
     db.session.commit()
 
-    access_token = create_access_token(identity=new_user.id)
-    refresh_token = create_refresh_token(identity=new_user.id)
+    return jsonify(success=True, message="Registration successful. OTP sent to email.", data={
+        "email": new_user.email
+    }), 201
+
+@auth_bp.route('/verify-email-otp', methods=['POST'])
+def verify_email_otp():
+    schema = VerifyEmailOTPSchema()
+    try:
+        data = schema.load(request.json)
+    except ValidationError as err:
+        return jsonify(success=False, error={"code": "VALIDATION_ERROR", "message": "Invalid request", "details": err.messages}), 400
+
+    email = data['email']
+    otp_code = data['otp_code']
+
+    valid, msg = verify_otp(email=email, otp_code=otp_code, purpose='email_verification')
+    if not valid:
+        return jsonify(success=False, error={"code": "OTP_INVALID", "message": msg}), 422
+
+    user = User.query.filter_by(email=email).first()
+    if not user:
+        return jsonify(success=False, error={"code": "NOT_FOUND", "message": "User not found"}), 404
+
+    user.is_verified = True
+    db.session.commit()
+
+    access_token = create_access_token(identity=user.id)
+    refresh_token = create_refresh_token(identity=user.id)
 
     return jsonify(success=True, data={
-        "user_id": new_user.id,
-        "email": new_user.email,
+        "user_id": user.id,
+        "full_name": user.full_name,
+        "email": user.email,
         "access_token": access_token,
         "refresh_token": refresh_token
-    }, message="Registration successful"), 201
+    }, message="Email verified successfully"), 200
 
 @auth_bp.route('/login/email', methods=['POST'])
 @limiter.limit("5/15minutes") 
@@ -164,9 +250,7 @@ def refresh():
 @auth_bp.route('/logout', methods=['POST'])
 @jwt_required()
 def logout():
-    # In a real app we'd blacklist the token in Redis here
-    # jti = get_jwt()["jti"]
-    # redis_client.set(jti, "", ex=Config.JWT_ACCESS_TOKEN_EXPIRES)
+    # In a real app we'd blacklist the token in the database here if needed.
     return jsonify(success=True, message="Logged out successfully"), 200
 
 @auth_bp.route('/validate', methods=['GET'])

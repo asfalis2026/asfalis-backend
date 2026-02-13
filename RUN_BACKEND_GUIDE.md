@@ -7,10 +7,6 @@ This guide provides step-by-step instructions to set up and run the Raksha backe
 Ensure you have the following installed on your system:
 - **Python 3.10+**
 - **pip** (Python package manager)
-- **Redis** (Required for background tasks)
-   - Mac: `brew install redis`
-   - Linux: `sudo apt install redis`
-   - Windows: [Download Installer](https://github.com/microsoftarchive/redis/releases)
 
 ## 2. Environment Setup
 
@@ -18,7 +14,9 @@ Ensure you have the following installed on your system:
 It's recommended to use a virtual environment to manage dependencies.
 
 ```bash
-cd raksha-backend
+# Verify you are in the project root (where requirements.txt is located)
+# cd women_safety_backend (if needed)
+
 python3 -m venv venv
 source venv/bin/activate  # On Windows: venv\Scripts\activate
 ```
@@ -34,14 +32,18 @@ Refer to `ENV_SETUP_GUIDE.md` for detailed instructions on getting API keys for 
 
 ## 3. Database Initialization
 
-Initialize the database and run migrations to create the required tables.
+### 3. Database Initialization
+
+Since you are using **PostgreSQL (Supabase)**, ensure your `.env` contains the correct `DATABASE_URL`.
+
+Run the following commands to apply migrations to your remote database:
 
 ```bash
-# Initialize SQLite database (local dev)
-flask db init
-flask db migrate -m "Initial migration"
+# Apply migrations to Supabase/PostgreSQL
 flask db upgrade
 ```
+
+> **Note:** Do NOT run `flask db init` if the `migrations/` folder already exists.
 
 ## 4. Running the Services
 
@@ -65,6 +67,19 @@ That's it! The server handles SMS, Push Notifications, and Database operations s
 
 - **API Health Check**: Visit `http://localhost:5000/health`
 - **Socket.IO**: Connect a client to `http://localhost:5000`.
+
+## 6. Running with Docker (Optional)
+
+If you prefer to run the entire backend using Docker, follow these steps:
+
+1. **Install Docker**: Ensure Docker Desktop is installed and running.
+2. **Setup .env**: Ensure your `.env` file is present in the root directory.
+3. **Run Command**:
+   ```bash
+   docker-compose up --build
+   ```
+4. **Access**: The server will be available at `http://localhost:5000`.
+5. **Background Mode**: To run in the background, use `docker-compose up -d`.
 
 ## Troubleshooting
 

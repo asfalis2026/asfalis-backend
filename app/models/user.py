@@ -9,6 +9,7 @@ class User(db.Model):
 
     id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     full_name = db.Column(db.String(100), nullable=False)
+    country = db.Column(db.String(100), nullable=True)
     email = db.Column(db.String(255), unique=True, nullable=True)
     phone = db.Column(db.String(20), unique=True, nullable=True)
     password_hash = db.Column(db.String(255), nullable=True)
@@ -21,12 +22,12 @@ class User(db.Model):
     updated_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     # Relationships
-    trusted_contacts = db.relationship('TrustedContact', backref='user', lazy=True)
-    sos_alerts = db.relationship('SOSAlert', backref='user', lazy=True)
-    location_history = db.relationship('LocationHistory', backref='user', lazy=True)
-    settings = db.relationship('UserSettings', uselist=False, backref='user', lazy=True)
-    devices = db.relationship('ConnectedDevice', backref='user', lazy=True)
-    support_tickets = db.relationship('SupportTicket', backref='user', lazy=True)
+    trusted_contacts = db.relationship('TrustedContact', backref='user', lazy=True, cascade="all, delete-orphan")
+    sos_alerts = db.relationship('SOSAlert', backref='user', lazy=True, cascade="all, delete-orphan")
+    location_history = db.relationship('LocationHistory', backref='user', lazy=True, cascade="all, delete-orphan")
+    settings = db.relationship('UserSettings', uselist=False, backref='user', lazy=True, cascade="all, delete-orphan")
+    devices = db.relationship('ConnectedDevice', backref='user', lazy=True, cascade="all, delete-orphan")
+    support_tickets = db.relationship('SupportTicket', backref='user', lazy=True, cascade="all, delete-orphan")
 
     def to_dict(self):
         return {

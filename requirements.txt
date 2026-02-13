@@ -10,7 +10,6 @@ psycopg2-binary==2.9.11
 SQLAlchemy==2.0.38
 eventlet==0.35.2
 celery==5.4.0
-redis==5.2.1
 twilio==9.4.6
 firebase-admin==6.6.0
 gunicorn==23.0.0

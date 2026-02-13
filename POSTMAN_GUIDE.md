@@ -21,7 +21,7 @@ This guide covers **every API endpoint** in the Raksha backend, with example req
 3. Save. All requests inherit auth automatically.
 
 ### Auto-Save Token Script
-Add this to the **Tests** tab of any login/register request:
+Add this to the **Tests** tab of the **Login** or **Verify Email OTP** request (NOT the Register request):
 ```javascript
 var jsonData = pm.response.json();
 if (jsonData.success && jsonData.data.access_token) {
@@ -41,11 +41,22 @@ if (jsonData.success && jsonData.data.access_token) {
 ### 📁 Auth (`/api/auth`)
 
 **1. Register (Email)** — `POST {{baseUrl}}/auth/register/email`
+> Note: This sends a 6-digit OTP to the email. Tokens are NOT returned here.
 ```json
 {
     "email": "test@example.com",
     "password": "Password123!",
-    "full_name": "Test User"
+    "full_name": "Test User",
+    "country": "India"
+}
+```
+
+**1a. Verify Email OTP** — `POST {{baseUrl}}/auth/verify-email-otp`
+> Returns tokens upon successful verification.
+```json
+{
+    "email": "test@example.com",
+    "otp_code": "123456"
 }
 ```
 
@@ -123,7 +134,10 @@ if (jsonData.success && jsonData.data.access_token) {
 }
 ```
 
-**4. Delete Account** — `DELETE {{baseUrl}}/user/account`
+**4. Delete Account (Self)** — `DELETE {{baseUrl}}/user/account`
+
+**5. Delete User (Admin/Dev)** — `DELETE {{baseUrl}}/user/<user_id>`
+> Requires Auth Token. Deletes any user by ID.
 
 ---
 

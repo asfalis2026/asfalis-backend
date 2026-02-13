@@ -1,6 +1,10 @@
 
 from twilio.rest import Client
 from app.config import Config
+from celery import shared_task
+import logging
+
+logger = logging.getLogger(__name__)
 
 # Initialize Twilio Client
 account_sid = Config.TWILIO_ACCOUNT_SID
@@ -12,28 +16,44 @@ if account_sid and auth_token:
     try:
         client = Client(account_sid, auth_token)
     except Exception as e:
-        print(f"Error initializing Twilio client: {e}")
+        logger.error(f"Error initializing Twilio client: {e}")
 
-def send_sms(to, body):
+@shared_task(ignore_result=True)
+def send_sms_task(to, body, from_):
     """
-    Send an SMS message via Twilio.
+    Background task to send an SMS.
     """
     if not client:
-        print("Twilio client not initialized. check .env")
-        # Fallback to mock for development/testing if keys are missing but code is running
-        print(f"--- MOCK SMS TO {to}: {body}")
-        return "mock-sid"
+        logger.warning(f"Twilio client not initialized. Skipped SMS to {to}")
+        return
 
     try:
         message = client.messages.create(
             body=body,
-            from_=twilio_phone,
+            from_=from_,
             to=to
         )
-        print(f"SMS sent to {to}: {message.sid}")
-        return message.sid
+        logger.info(f"SMS sent to {to}: {message.sid}")
     except Exception as e:
-        print(f"Failed to send SMS to {to}: {e}")
+        logger.error(f"Failed to send SMS to {to}: {e}")
+
+def send_sms(to, body):
+    """
+    Queue an SMS message via Twilio.
+    """
+    if not client:
+        logger.warning("Twilio client not initialized. check .env")
+        # Fallback to mock for development if needed
+        print(f"--- MOCK SMS TO {to}: {body}")
+        return "mock-sid"
+
+    # Dispatch to Celery
+    try:
+        send_sms_task.delay(to, body, twilio_phone)
+        logger.info(f"SMS task queued for {to}")
+        return "queued"
+    except Exception as e:
+        logger.error(f"Failed to queue SMS for {to}: {e}")
         return None
 
 def send_otp_sms(phone, otp_code):

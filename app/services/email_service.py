@@ -2,9 +2,23 @@
 from flask_mail import Message
 from app.extensions import mail
 from flask import current_app
+from celery import shared_task
 import logging
 
 logger = logging.getLogger(__name__)
+
+@shared_task(ignore_result=True)
+def send_email_task(subject, recipient, html_body, sender):
+    """
+    Background task to send an email.
+    """
+    try:
+        msg = Message(subject, sender=sender, recipients=[recipient])
+        msg.html = html_body
+        mail.send(msg)
+        logger.info(f"Email sent to {recipient}")
+    except Exception as e:
+        logger.error(f"Failed to send email to {recipient}: {str(e)}")
 
 def send_otp_email(to_email, otp_code):
     """
@@ -15,8 +29,7 @@ def send_otp_email(to_email, otp_code):
         sender = current_app.config.get('MAIL_USERNAME')
         if not sender:
             logger.warning("MAIL_USERNAME not set. Email sending will fail.")
-        
-        msg = Message(subject, sender=sender, recipients=[to_email])
+            return False
         
         html_body = f"""
         <!DOCTYPE html>
@@ -52,13 +65,12 @@ def send_otp_email(to_email, otp_code):
         </html>
         """
         
-        msg.html = html_body
-        
-        mail.send(msg)
-        logger.info(f"OTP sent to {to_email}")
+        # Dispatch to Celery
+        send_email_task.delay(subject, to_email, html_body, sender)
+        logger.info(f"OTP email task queued for {to_email}")
         return True
     except Exception as e:
-        logger.error(f"Failed to send OTP email to {to_email}: {str(e)}")
+        logger.error(f"Failed to queue OTP email for {to_email}: {str(e)}")
         return False
 
 def send_contact_added_email(to_email, contact_name, user_name, twilio_number, sandbox_code):
@@ -127,12 +139,10 @@ def send_contact_added_email(to_email, contact_name, user_name, twilio_number, s
         </html>
         """
 
-        msg = Message(subject, sender=sender, recipients=[to_email])
-        msg.html = html_body
-        
-        mail.send(msg)
-        logger.info(f"Contact notification email sent to {to_email}")
+        # Dispatch to Celery
+        send_email_task.delay(subject, to_email, html_body, sender)
+        logger.info(f"Contact notification task queued for {to_email}")
         return True
     except Exception as e:
-        logger.error(f"Failed to send contact notification email to {to_email}: {str(e)}")
+        logger.error(f"Failed to queue contact notification for {to_email}: {str(e)}")
         return False

@@ -143,3 +143,13 @@ Thumbs.db
 
 # Project specifics
 *firebase-adminsdk*.json
+
+# Misc Guidelines
+BACKEND_GUIDELINE.md
+TESTING_GUIDE.md
+SUPABASE_SETUP.md
+ENV_SETUP_GUIDE.md
+POSTMAN_GUIDE.md
+FLASK_API_INTEGRATION.md
+DOCKER_GUIDE.md
+

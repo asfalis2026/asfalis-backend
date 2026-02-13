@@ -27,11 +27,11 @@ class Config:
     TWILIO_SANDBOX_CODE = os.environ.get('TWILIO_SANDBOX_CODE', 'join <sandbox-code>')
     
     
-    # Background Task Configuration (Synchronous / Eager Mode)
-    # Redis is removed to simplify deployment.
+    # Background Task Configuration
     CELERY = dict(
-        task_always_eager=True,
-        task_eager_propagates=True,
+        broker_url=os.environ.get('CELERY_BROKER_URL', 'redis://localhost:6379/0'),
+        result_backend=os.environ.get('CELERY_RESULT_BACKEND', 'redis://localhost:6379/0'),
+        task_ignore_result=True,
     )
 
     FIREBASE_CREDENTIALS_PATH = os.environ.get('FIREBASE_CREDENTIALS_PATH')

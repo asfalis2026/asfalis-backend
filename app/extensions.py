@@ -19,4 +19,4 @@ async_mode = 'threading' if os.environ.get('FLASK_TESTING') else None
 socketio = SocketIO(cors_allowed_origins="*", async_mode=async_mode) # Allow all origins for now
 mail = Mail()
 cors = CORS()
-limiter = Limiter(key_func=get_remote_address)
+limiter = Limiter(key_func=get_remote_address, on_breach=lambda limit: None)

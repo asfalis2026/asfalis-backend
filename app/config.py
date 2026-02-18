@@ -35,7 +35,18 @@ class Config:
     )
     
     # Flask-Limiter Storage
-    RATELIMIT_STORAGE_URI = os.environ.get('RATELIMIT_STORAGE_URI') or os.environ.get('REDIS_URL') or 'memory://'
+    RATELIMIT_STORAGE_URI = os.environ.get('RATELIMIT_STORAGE_URI') or os.environ.get('REDIS_URL', 'redis://redis:6379/0')
+
+    # Fix for Docker environment: If running in Docker and URL is localhost, switch to 'redis'
+    if os.path.exists('/.dockerenv'):
+        if 'localhost' in RATELIMIT_STORAGE_URI:
+            RATELIMIT_STORAGE_URI = RATELIMIT_STORAGE_URI.replace('localhost', 'redis')
+        
+        # Also update CELERY broker if it was defaulted/loaded as localhost
+        if 'localhost' in CELERY['broker_url']:
+            CELERY['broker_url'] = CELERY['broker_url'].replace('localhost', 'redis')
+        if 'localhost' in CELERY['result_backend']:
+            CELERY['result_backend'] = CELERY['result_backend'].replace('localhost', 'redis')
 
 
     FIREBASE_CREDENTIALS_PATH = os.environ.get('FIREBASE_CREDENTIALS_PATH')

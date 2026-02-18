@@ -11,4 +11,8 @@ COPY . .
 
 EXPOSE 5000
 
-CMD gunicorn --worker-class eventlet -w 1 --bind 0.0.0.0:${PORT:-5000} wsgi:app
+COPY entrypoint.sh .
+RUN chmod +x entrypoint.sh
+
+ENTRYPOINT ["./entrypoint.sh"]
+CMD ["gunicorn", "--worker-class", "eventlet", "-w", "1", "--bind", "0.0.0.0:5000", "wsgi:app"]

@@ -17,6 +17,7 @@ class User(db.Model):
     profile_image_url = db.Column(db.String(500), nullable=True)
     is_active = db.Column(db.Boolean, default=True)
     is_verified = db.Column(db.Boolean, default=False)
+    sos_message = db.Column(db.String(50), nullable=True)
     fcm_token = db.Column(db.String(500), nullable=True)
     created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
     updated_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -39,5 +40,6 @@ class User(db.Model):
             'auth_provider': self.auth_provider,
             'is_active': self.is_active,
             'is_verified': self.is_verified,
+            'sos_message': self.sos_message,
             'member_since': self.created_at.strftime('%B %Y')
         }

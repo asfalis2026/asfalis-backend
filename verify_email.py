@@ -16,7 +16,7 @@ def test_email():
             print(f"TLS: {app.config['MAIL_USE_TLS']}")
             
             msg = Message(
-                subject="Test Email from Raksha Backend",
+                subject="Test Email from Asfalis Backend",
                 sender=app.config['MAIL_USERNAME'],
                 recipients=[recipient],
                 body="This is a test email to verify SMTP configuration."

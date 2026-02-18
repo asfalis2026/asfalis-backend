@@ -1,28 +1,28 @@
 services:
   - type: web
-    name: raksha-backend
+    name: Asfalis-backend
     runtime: python
     buildCommand: pip install -r requirements.txt
     startCommand: gunicorn --worker-class eventlet -w 1 --bind 0.0.0.0:$PORT wsgi:app
     envVars:
       - key: DATABASE_URL
         fromDatabase:
-          name: raksha-db
+          name: Asfalis-db
           property: connectionString
       - key: REDIS_URL
         fromService:
           type: redis
-          name: raksha-redis
+          name: Asfalis-redis
           property: connectionString
       - key: CELERY_BROKER_URL
         fromService:
           type: redis
-          name: raksha-redis
+          name: Asfalis-redis
           property: connectionString
       - key: CELERY_RESULT_BACKEND
         fromService:
           type: redis
-          name: raksha-redis
+          name: Asfalis-redis
           property: connectionString
       - key: SECRET_KEY
         generateValue: true
@@ -42,29 +42,29 @@ services:
         sync: false
 
   - type: worker
-    name: raksha-worker
+    name: Asfalis-worker
     runtime: python
     buildCommand: pip install -r requirements.txt
     startCommand: celery -A celery_worker.celery worker --loglevel=info
     envVars:
       - key: DATABASE_URL
         fromDatabase:
-          name: raksha-db
+          name: Asfalis-db
           property: connectionString
       - key: REDIS_URL
         fromService:
           type: redis
-          name: raksha-redis
+          name: Asfalis-redis
           property: connectionString
       - key: CELERY_BROKER_URL
         fromService:
           type: redis
-          name: raksha-redis
+          name: Asfalis-redis
           property: connectionString
       - key: CELERY_RESULT_BACKEND
         fromService:
           type: redis
-          name: raksha-redis
+          name: Asfalis-redis
           property: connectionString
       - key: FIREBASE_CREDENTIALS_JSON
         sync: false
@@ -80,14 +80,14 @@ services:
         sync: false
 
   - type: redis
-    name: raksha-redis
+    name: Asfalis-redis
     region: singapore
     ipAllowList: [] # only allow internal connections
 
 databases:
-  - name: raksha-db
-    databaseName: raksha
-    user: raksha_user
+  - name: Asfalis-db
+    databaseName: Asfalis
+    user: Asfalis_user
     plan: free # optional
     region: singapore
 

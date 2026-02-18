@@ -37,7 +37,14 @@ def trigger_sos(user_id, lat, lng, trigger_type='manual'):
         else:
             return existing_alert, "Alert already in countdown"
 
-    sos_message = user.settings.sos_message if user.settings else "Emergency!"
+    # Prioritize the new sos_message on User model, fallback to Settings or Default
+    start_message = "Emergency!"
+    if user.sos_message:
+        start_message = user.sos_message
+    elif user.settings and user.settings.sos_message:
+        start_message = user.settings.sos_message
+    
+    sos_message = start_message
 
     new_alert = SOSAlert(
         user_id=user_id,
@@ -77,7 +84,7 @@ def dispatch_sos(alert_id):
     
     # Generate Google Maps Link
     maps_link = f"https://maps.google.com/?q={alert.latitude},{alert.longitude}"
-    full_message = f"{alert.sos_message}\n\n📍 Location: {maps_link}\nSent by RAKSHA for {user.full_name}"
+    full_message = f"{alert.sos_message}\n\n📍 Location: {maps_link}\nSent by Asfalis for {user.full_name}"
 
     for contact in contacts:
         # Send SMS

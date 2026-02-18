@@ -1,6 +1,6 @@
-# RAKSHA Backend - Run Guide
+# Asfalis Backend - Run Guide
 
-This guide provides step-by-step instructions to set up and run the Raksha backend server, including all necessary services (Database, Redis, Celery).
+This guide provides step-by-step instructions to set up and run the Asfalis backend server, including all necessary services (Database, Redis, Celery).
 
 ## 1. Prerequisites
 

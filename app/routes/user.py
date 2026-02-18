@@ -33,6 +33,8 @@ def get_profile():
         "email": user.email,
         "country": user.country,
         "phone": user.phone,
+        "phone": user.phone,
+        "sos_message": user.sos_message,
         "profile_image_url": user.profile_image_url,
         "emergency_contact": user.settings.emergency_number if user.settings else None,
         "trusted_contacts": [c.to_dict() for c in contacts],
@@ -61,6 +63,8 @@ def update_profile():
         user.full_name = data['full_name']
     if 'phone' in data:
         user.phone = data['phone']
+    if 'sos_message' in data:
+        user.sos_message = data['sos_message']
     if 'profile_image_url' in data:
         user.profile_image_url = data['profile_image_url']
     

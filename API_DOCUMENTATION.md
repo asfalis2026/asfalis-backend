@@ -1,4 +1,4 @@
-# Raksha Backend API Documentation
+# Asfalis Backend API Documentation
 
 Base URL: `http://localhost:5000/api`
 
@@ -195,7 +195,7 @@ Base URL: `http://localhost:5000/api`
 - **Body**:
   ```json
   {
-    "device_name": "Raksha Band",
+    "device_name": "Asfalis Band",
     "device_mac": "AA:BB:CC:11:22:33"
   }
   ```

@@ -60,7 +60,7 @@ def send_otp_sms(phone, otp_code):
     """
     Send OTP for phone authentication.
     """
-    body = f"Your RAKSHA verification code is: {otp_code}. Valid for 5 minutes. Do not share."
+    body = f"Your Asfalis verification code is: {otp_code}. Valid for 5 minutes. Do not share."
     return send_sms(phone, body)
 
 def send_sos_sms(contact_phone, user_name, message_text, location_url):
@@ -68,10 +68,10 @@ def send_sos_sms(contact_phone, user_name, message_text, location_url):
     Send SOS alert SMS to a trusted contact.
     """
     body = (
-        f"🚨 RAKSHA EMERGENCY ALERT 🚨\n\n"
+        f"🚨 Asfalis EMERGENCY ALERT 🚨\n\n"
         f"{message_text}\n\n"
         f"Sent by: {user_name}\n"
         f"📍 Live Location: {location_url}\n\n"
-        f"This is an automated alert from the RAKSHA Women Safety app."
+        f"This is an automated alert from the Asfalis Women Safety app."
     )
     return send_sms(contact_phone, body)

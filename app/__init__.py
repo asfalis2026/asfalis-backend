@@ -47,7 +47,7 @@ def create_app(config_class=Config):
 
     @app.route('/health')
     def health_check():
-        return jsonify({"status": "healthy", "service": "raksha-backend"}), 200
+        return jsonify({"status": "healthy", "service": "Asfalis-backend"}), 200
 
     
     # Global Error Handlers

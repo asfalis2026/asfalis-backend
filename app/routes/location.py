@@ -52,7 +52,7 @@ def start_sharing_route():
     
     # Generate a dummy tracking URL
     tracking_session_id = str(uuid.uuid4())
-    tracking_url = f"https://raksha.app/track/{tracking_session_id}"
+    tracking_url = f"https://Asfalis.app/track/{tracking_session_id}"
 
     return jsonify(success=True, data={
         "sharing_session_id": tracking_session_id,

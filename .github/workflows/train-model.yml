@@ -1,0 +1,13 @@
+name: Retrain ML Model
+"on":
+  schedule:
+    - cron: '0 2 */5 * *'  # Every 5 days at 2 AM UTC
+  workflow_dispatch:  # Allow manual trigger
+
+jobs:
+  train:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger Training
+        run: |
+          curl -X POST ${{ secrets.API_URL }}/api/protection/train-model

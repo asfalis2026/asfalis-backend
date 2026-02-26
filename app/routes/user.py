@@ -6,6 +6,9 @@ from app.models.trusted_contact import TrustedContact
 from app.extensions import db, limiter
 from app.schemas.user_schema import UpdateProfileSchema, FCMTokenSchema
 from marshmallow import ValidationError
+import logging
+
+logger = logging.getLogger(__name__)
 
 user_bp = Blueprint('user', __name__)
 
@@ -72,10 +75,12 @@ def update_profile():
         db.session.commit()
     except Exception as e:
         db.session.rollback()
+        logger.error(f"Profile update failed for user {current_user_id}: {str(e)}")
         # Check for integrity error (unique constraint violation)
-        if "UNIQUE constraint failed" in str(e):
-             return jsonify(success=False, error={"code": "CONFLICT", "message": "Email or Phone number already in use"}), 409
-        return jsonify(success=False, error={"code": "INTERNAL_ERROR", "message": "An unexpected error occurred"}), 500
+        error_msg = str(e).lower()
+        if "unique" in error_msg or "duplicate" in error_msg:
+             return jsonify(success=False, error={"code": "CONFLICT", "message": "Phone number already in use by another account"}), 409
+        return jsonify(success=False, error={"code": "INTERNAL_ERROR", "message": "An unexpected error occurred", "details": str(e)}), 500
 
     return jsonify(success=True, message="Profile updated successfully"), 200
 
@@ -98,6 +103,39 @@ def update_fcm_token():
     db.session.commit()
 
     return jsonify(success=True, message="FCM token updated"), 200
+
+@user_bp.route('/sos-message', methods=['PUT'])
+@jwt_required()
+def update_sos_message():
+    """Update user's SOS emergency message"""
+    current_user_id = get_jwt_identity()
+    user = User.query.get(current_user_id)
+
+    if not user:
+        return jsonify(success=False, error={"code": "NOT_FOUND", "message": "User not found"}), 404
+
+    data = request.get_json()
+    
+    if not data or 'sos_message' not in data:
+        return jsonify(success=False, error={"code": "VALIDATION_ERROR", "message": "sos_message field is required"}), 400
+    
+    sos_message = data.get('sos_message')
+    
+    if not sos_message or len(sos_message.strip()) == 0:
+        return jsonify(success=False, error={"code": "VALIDATION_ERROR", "message": "SOS message cannot be empty"}), 400
+    
+    if len(sos_message) > 500:
+        return jsonify(success=False, error={"code": "VALIDATION_ERROR", "message": "SOS message too long (max 500 characters)"}), 400
+    
+    user.sos_message = sos_message.strip()
+    
+    try:
+        db.session.commit()
+    except Exception as e:
+        db.session.rollback()
+        return jsonify(success=False, error={"code": "INTERNAL_ERROR", "message": "Failed to update SOS message"}), 500
+
+    return jsonify(success=True, message="SOS message updated successfully", data={"sos_message": user.sos_message}), 200
 
 @user_bp.route('/account', methods=['DELETE'])
 @jwt_required()

@@ -37,7 +37,7 @@ def _is_firebase_ready():
 def send_push_notification(fcm_token, title, body, data=None):
     """
     Send a push notification via FCM in a background thread.
-    No Celery/Redis required.
+    No external task queue required.
     """
     if not fcm_token:
         logger.error("No FCM token provided")

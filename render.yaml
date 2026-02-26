@@ -3,26 +3,11 @@ services:
     name: Asfalis-backend
     runtime: python
     buildCommand: pip install -r requirements.txt
-    startCommand: flask db upgrade && gunicorn --worker-class eventlet -w 1 --bind 0.0.0.0:$PORT wsgi:app
+    startCommand: flask db upgrade && gunicorn -w 1 --threads 4 --bind 0.0.0.0:$PORT wsgi:app
     envVars:
       - key: DATABASE_URL
         fromDatabase:
           name: Asfalis-db
-          property: connectionString
-      - key: REDIS_URL
-        fromService:
-          type: redis
-          name: Asfalis-redis
-          property: connectionString
-      - key: CELERY_BROKER_URL
-        fromService:
-          type: redis
-          name: Asfalis-redis
-          property: connectionString
-      - key: CELERY_RESULT_BACKEND
-        fromService:
-          type: redis
-          name: Asfalis-redis
           property: connectionString
       - key: SECRET_KEY
         generateValue: true
@@ -40,49 +25,6 @@ services:
         sync: false
       - key: MAIL_PASSWORD
         sync: false
-
-  - type: worker
-    name: Asfalis-worker
-    runtime: python
-    buildCommand: pip install -r requirements.txt
-    startCommand: celery -A celery_worker.celery worker --loglevel=info
-    envVars:
-      - key: DATABASE_URL
-        fromDatabase:
-          name: Asfalis-db
-          property: connectionString
-      - key: REDIS_URL
-        fromService:
-          type: redis
-          name: Asfalis-redis
-          property: connectionString
-      - key: CELERY_BROKER_URL
-        fromService:
-          type: redis
-          name: Asfalis-redis
-          property: connectionString
-      - key: CELERY_RESULT_BACKEND
-        fromService:
-          type: redis
-          name: Asfalis-redis
-          property: connectionString
-      - key: FIREBASE_CREDENTIALS_JSON
-        sync: false
-      - key: TWILIO_ACCOUNT_SID
-        sync: false
-      - key: TWILIO_AUTH_TOKEN
-        sync: false
-      - key: TWILIO_PHONE_NUMBER
-        sync: false
-      - key: MAIL_USERNAME
-        sync: false
-      - key: MAIL_PASSWORD
-        sync: false
-
-  - type: redis
-    name: Asfalis-redis
-    region: singapore
-    ipAllowList: [] # only allow internal connections
 
 databases:
   - name: Asfalis-db

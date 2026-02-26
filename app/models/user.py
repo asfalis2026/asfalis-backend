@@ -17,7 +17,7 @@ class User(db.Model):
     profile_image_url = db.Column(db.String(500), nullable=True)
     is_active = db.Column(db.Boolean, default=True)
     is_verified = db.Column(db.Boolean, default=False)
-    sos_message = db.Column(db.String(50), nullable=True)
+    sos_message = db.Column(db.String(500), nullable=True)
     fcm_token = db.Column(db.String(500), nullable=True)
     created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
     updated_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)

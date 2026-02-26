@@ -1,6 +1,6 @@
 # Asfalis Backend - Run Guide
 
-This guide provides step-by-step instructions to set up and run the Asfalis backend server, including all necessary services (Database, Redis, Celery).
+This guide provides step-by-step instructions to set up and run the Asfalis backend server.
 
 ## 1. Prerequisites
 
@@ -47,7 +47,7 @@ flask db upgrade
 
 ## 4. Running the Services
 
-Since we have configured the backend to run in "eager mode" for local development, **you do NOT need to run Redis or Celery separately.**
+Background tasks (SMS, Email, Push Notifications, WhatsApp) are handled using Python threading and run automatically when needed.
 
 ### Start the Backend Server
 
@@ -58,10 +58,13 @@ Simply run this command in your terminal:
 source venv/bin/activate
 
 # Run Flask (Development Mode)
-flask run --host=0.0.0.0 --port=5000
+python3 wsgi.py
+
+# Alternative: Use Flask CLI (requires flask-dotenv or manual export)
+# flask run --host=0.0.0.0 --port=5000
 ```
 
-That's it! The server handles SMS, Push Notifications, and Database operations synchronously.
+The server will automatically load environment variables from `.env` and handle SMS, Email, Push Notifications via threading.
 
 ## 5. Verification
 

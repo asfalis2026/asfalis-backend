@@ -20,10 +20,6 @@ def create_app(config_class=Config):
     cors.init_app(app)
     limiter.init_app(app)
 
-    # Initialize Celery
-    from app.utils.celery_utils import celery_init_app
-    celery_init_app(app)
-
     # Register Blueprints
     from app.routes.auth import auth_bp
     from app.routes.user import user_bp

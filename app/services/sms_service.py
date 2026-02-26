@@ -17,7 +17,7 @@ def _get_twilio_client():
 
 
 def _send_sms_direct(to, body, from_):
-    """Send SMS directly via Twilio (no Celery)."""
+    """Send SMS directly via Twilio using background threads."""
     try:
         account_sid = current_app.config.get('TWILIO_ACCOUNT_SID')
         auth_token = current_app.config.get('TWILIO_AUTH_TOKEN')
@@ -38,7 +38,7 @@ def send_sms(to, body):
     """
     Send an SMS message via Twilio.
     Sends in a background thread to avoid blocking the request,
-    without requiring Celery/Redis.
+    without requiring external task queues.
     """
     try:
         account_sid = current_app.config.get('TWILIO_ACCOUNT_SID')

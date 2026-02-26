@@ -17,16 +17,3 @@ def validate_schema(schema):
             return f(*args, **kwargs)
         return wrapper
     return decorator
-
-def admin_required():
-    """Decorator to require admin role (not implemented yet, placeholder)."""
-    def decorator(f):
-        @wraps(f)
-        def wrapper(*args, **kwargs):
-            verify_jwt_in_request()
-            claims = get_jwt()
-            if claims.get("role") != "admin":
-                return jsonify(success=False, error={"code": "FORBIDDEN", "message": "Admins only!"}), 403
-            return f(*args, **kwargs)
-        return wrapper
-    return decorator

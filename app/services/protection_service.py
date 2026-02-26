@@ -24,7 +24,7 @@ def _get_model():
             import io
             
             # Need app context if running outside request (e.g. tests)
-            # But usually this is called within a request or celery task
+            # But usually this is called within a request or background task
             active_model = MLModel.query.filter_by(is_active=True).order_by(MLModel.created_at.desc()).first()
             
             if active_model:

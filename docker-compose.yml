@@ -6,35 +6,8 @@ services:
     env_file: .env
     environment:
       - FLASK_ENV=development
-      # Force python to prefer IPv4
       - VIRTUAL_ENV=/app/venv
-      # Override Redis URLs for Docker networking (service name 'redis')
-      - REDIS_URL=redis://redis:6379/0
-      - CELERY_BROKER_URL=redis://redis:6379/0
-      - CELERY_RESULT_BACKEND=redis://redis:6379/0
-    depends_on:
-      - redis
     # Sometimes needed for DNS issues in corporate/restricted networks
     dns:
       - 8.8.8.8
       - 8.8.4.4
-
-  worker:
-    build: .
-    command: celery -A celery_worker.celery worker --loglevel=info
-    env_file: .env
-    environment:
-      - FLASK_ENV=development
-      - VIRTUAL_ENV=/app/venv
-      - REDIS_URL=redis://redis:6379/0
-      - CELERY_BROKER_URL=redis://redis:6379/0
-      - CELERY_RESULT_BACKEND=redis://redis:6379/0
-    depends_on:
-      - redis
-      - web
-
-  redis:
-    image: redis:alpine
-    ports:
-      - "6379:6379"
-    restart: unless-stopped

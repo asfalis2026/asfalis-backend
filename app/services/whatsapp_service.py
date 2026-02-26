@@ -10,7 +10,7 @@ logger = logging.getLogger(__name__)
 def send_whatsapp_alert(to_number, message):
     """
     Send a WhatsApp message via Twilio directly in a background thread.
-    No Celery/Redis required.
+    No external task queue required.
 
     Args:
         to_number: Recipient WhatsApp number in E.164 format (e.g. +919876543210).

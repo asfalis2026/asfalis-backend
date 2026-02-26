@@ -8,6 +8,29 @@ jobs:
   train:
     runs-on: ubuntu-latest
     steps:
-      - name: Trigger Training
+      - name: Validate API_URL secret
         run: |
-          curl -X POST ${{ secrets.API_URL }}/api/protection/train-model
+          if [ -z "${{ secrets.API_URL }}" ]; then
+            echo "❌ API_URL secret is not set. Go to Settings → Secrets → Actions → New repository secret"
+            exit 1
+          fi
+          echo "✅ API_URL is configured"
+
+      - name: Trigger Model Retraining
+        run: |
+          echo "🔄 Calling training endpoint..."
+          response=$(curl -s -o /tmp/response.json -w "%{http_code}" -X POST \
+            "${{ secrets.API_URL }}/api/protection/train-model" \
+            -H "Content-Type: application/json" \
+            --max-time 30)
+
+          echo "HTTP Status: $response"
+          echo "Response body:"
+          cat /tmp/response.json
+
+          if [ "$response" -ne 202 ]; then
+            echo "❌ Training trigger failed with status $response"
+            exit 1
+          fi
+
+          echo "✅ Model retraining started successfully"

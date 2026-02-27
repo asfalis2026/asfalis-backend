@@ -78,6 +78,59 @@ def send_otp_sms(phone, otp_code):
     return send_sms(phone, body)
 
 
+def send_otp_via_verify(phone: str):
+    """Send OTP via Twilio Verify service.
+
+    Returns (True, sid) on success, (False, error_str) on failure.
+    Falls back to mock-success in dev when credentials are absent.
+    """
+    account_sid = current_app.config.get('TWILIO_ACCOUNT_SID')
+    auth_token = current_app.config.get('TWILIO_AUTH_TOKEN')
+    service_sid = current_app.config.get('TWILIO_VERIFY_SERVICE_SID')
+
+    if not all([account_sid, auth_token, service_sid]):
+        logger.warning(f"Twilio Verify not configured — skipping OTP send to {phone} (dev mode)")
+        return True, "mock"
+
+    try:
+        client = Client(account_sid, auth_token)
+        verification = client.verify.v2.services(service_sid).verifications.create(
+            to=phone, channel='sms'
+        )
+        logger.info(f"Twilio Verify OTP sent to {phone}: {verification.sid}")
+        return True, verification.sid
+    except Exception as e:
+        logger.error(f"Twilio Verify send failed for {phone}: {e}")
+        return False, str(e)
+
+
+def check_otp_via_verify(phone: str, code: str):
+    """Check OTP via Twilio Verify VerificationCheck.
+
+    Returns (True, msg) if approved, (False, msg) otherwise.
+    Auto-approves in dev when credentials are absent.
+    """
+    account_sid = current_app.config.get('TWILIO_ACCOUNT_SID')
+    auth_token = current_app.config.get('TWILIO_AUTH_TOKEN')
+    service_sid = current_app.config.get('TWILIO_VERIFY_SERVICE_SID')
+
+    if not all([account_sid, auth_token, service_sid]):
+        logger.warning(f"Twilio Verify not configured — auto-approving OTP for {phone} (dev mode)")
+        return True, "OTP verified (mock)"
+
+    try:
+        client = Client(account_sid, auth_token)
+        check = client.verify.v2.services(service_sid).verification_checks.create(
+            to=phone, code=code
+        )
+        if check.status == 'approved':
+            return True, "OTP verified"
+        return False, "Invalid or expired OTP"
+    except Exception as e:
+        logger.error(f"Twilio Verify check failed for {phone}: {e}")
+        return False, str(e)
+
+
 def send_sos_sms(contact_phone, user_name, message_text, location_url):
     """Send SOS alert SMS to a trusted contact."""
     body = (

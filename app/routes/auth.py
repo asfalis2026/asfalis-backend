@@ -6,11 +6,12 @@ from app.models.settings import UserSettings
 from app.models.trusted_contact import TrustedContact
 from app.models.revoked_token import RevokedToken
 from app.utils.validators import validate_password
-from app.utils.otp import generate_otp, store_otp, verify_otp
+from app.services.sms_service import send_otp_via_verify, check_otp_via_verify
 from app.schemas.auth_schema import (
     PhoneRegisterSchema, PhoneLoginSchema,
     RefreshTokenSchema, ResendOTPSchema,
-    ForgotPasswordSchema, GoogleLoginSchema, VerifyPhoneOTPSchema
+    ForgotPasswordSchema, GoogleLoginSchema, VerifyPhoneOTPSchema,
+    ResetPasswordSchema
 )
 from flask_jwt_extended import (
     create_access_token, create_refresh_token, jwt_required,
@@ -102,38 +103,30 @@ def _extract_bearer(request_obj) -> str | None:
 
 
 # ------------------------------------------------------------------ #
-# Registration & Verification (phone-based, OTP sent by Android app) #
+# Registration & Verification (phone-based, OTP sent via Twilio)     #
 # ------------------------------------------------------------------ #
 
 @auth_bp.route('/register/phone', methods=['POST'])
 def register_phone():
     """Register a new user with phone number.
 
-    The backend generates an OTP and returns it in the response.
-    The Android app is responsible for sending this OTP to the user's
-    phone via the built-in SmsManager (no server-side SMS cost).
+    Triggers Twilio Verify to send a 6-digit OTP to the user's phone.
+    The OTP is NOT returned in the response — Twilio delivers it directly.
     """
     schema = PhoneRegisterSchema()
     try:
         data = schema.load(request.json)
     except ValidationError as err:
-        return jsonify(success=False, error={
-            "code": "VALIDATION_ERROR",
-            "message": "Invalid request",
-            "details": err.messages
-        }), 400
+        return jsonify(status="error", error_code="VALIDATION_ERROR",
+                       message="Invalid request", details=err.messages), 400
 
     if User.query.filter_by(phone=data['phone_number']).first():
-        return jsonify(success=False, error={
-            "code": "CONFLICT",
-            "message": "Phone number already registered"
-        }), 409
+        return jsonify(status="error", error_code="CONFLICT",
+                       message="This phone number is already registered."), 409
 
     if not validate_password(data['password']):
-        return jsonify(success=False, error={
-            "code": "VALIDATION_ERROR",
-            "message": "Password weak"
-        }), 400
+        return jsonify(status="error", error_code="VALIDATION_ERROR",
+                       message="Password is too weak."), 400
 
     hashed_pw = bcrypt.hashpw(
         data['password'].encode('utf-8'), bcrypt.gensalt()
@@ -158,15 +151,16 @@ def register_phone():
     )
     db.session.add(default_settings)
 
-    # Generate OTP — returned to the app so the device can SMS it
-    otp_code = generate_otp(length=6)
-    store_otp(phone=new_user.phone, otp_code=otp_code, purpose='phone_verification')
+    sent, err = send_otp_via_verify(new_user.phone)
+    if not sent:
+        db.session.rollback()
+        return jsonify(status="error", error_code="SMS_FAILED",
+                       message="Failed to send OTP. Please try again."), 502
 
     db.session.commit()
 
-    return jsonify(success=True, message="Registration successful. OTP generated.", data={
+    return jsonify(status="success", message="OTP sent to your phone via SMS", data={
         "phone_number": new_user.phone,
-        "otp_code": otp_code,
         "expires_in": int(current_app.config.get('OTP_EXPIRY_SECONDS', 300))
     }), 201
 
@@ -178,43 +172,36 @@ def verify_phone_otp():
     try:
         data = schema.load(request.json)
     except ValidationError as err:
-        return jsonify(success=False, error={
-            "code": "VALIDATION_ERROR",
-            "message": "Invalid request",
-            "details": err.messages
-        }), 400
+        return jsonify(status="error", error_code="VALIDATION_ERROR",
+                       message="Invalid request", details=err.messages), 400
 
     phone = data['phone_number']
     otp_code = data['otp_code']
 
-    valid, msg = verify_otp(phone=phone, otp_code=otp_code, purpose='phone_verification')
+    valid, msg = check_otp_via_verify(phone=phone, code=otp_code)
     if not valid:
-        return jsonify(success=False, error={
-            "code": "OTP_INVALID",
-            "message": msg
-        }), 422
+        return jsonify(status="error", error_code="OTP_INVALID", message=msg), 422
 
     user = User.query.filter_by(phone=phone).first()
     if not user:
-        return jsonify(success=False, error={
-            "code": "NOT_FOUND",
-            "message": "User not found"
-        }), 404
+        return jsonify(status="error", error_code="NOT_FOUND",
+                       message="User not found"), 404
 
     user.is_verified = True
     db.session.commit()
 
     access_token, refresh_token, sos_token, expires_in = _make_tokens(user.id)
 
-    return jsonify(success=True, data={
+    return jsonify(status="success", message="Phone verified successfully", data={
         "user_id": user.id,
         "full_name": user.full_name,
         "phone_number": user.phone,
+        "is_new_user": True,
         "access_token": access_token,
         "refresh_token": refresh_token,
         "sos_token": sos_token,
         "expires_in": expires_in
-    }, message="Phone verified successfully"), 200
+    }), 200
 
 
 # ------------------------------------------------------------------ #
@@ -228,41 +215,33 @@ def login_phone():
     try:
         data = schema.load(request.json)
     except ValidationError as err:
-        return jsonify(success=False, error={
-            "code": "VALIDATION_ERROR",
-            "message": "Invalid request",
-            "details": err.messages
-        }), 400
+        return jsonify(status="error", error_code="VALIDATION_ERROR",
+                       message="Invalid request", details=err.messages), 400
 
     user = User.query.filter_by(phone=data['phone_number']).first()
 
     if not user or not user.password_hash:
-        return jsonify(success=False, error={
-            "code": "UNAUTHORIZED",
-            "message": "Invalid credentials"
-        }), 401
+        return jsonify(status="error", error_code="UNAUTHORIZED",
+                       message="Invalid credentials"), 401
 
     if not bcrypt.checkpw(
         data['password'].encode('utf-8'),
         user.password_hash.encode('utf-8')
     ):
-        return jsonify(success=False, error={
-            "code": "UNAUTHORIZED",
-            "message": "Invalid credentials"
-        }), 401
+        return jsonify(status="error", error_code="UNAUTHORIZED",
+                       message="Invalid credentials"), 401
 
     if not user.is_verified:
-        return jsonify(success=False, error={
-            "code": "PHONE_NOT_VERIFIED",
-            "message": "Please verify your phone number before logging in."
-        }), 403
+        return jsonify(status="error", error_code="PHONE_NOT_VERIFIED",
+                       message="Please verify your phone number before logging in."), 403
 
     access_token, refresh_token, sos_token, expires_in = _make_tokens(user.id)
 
-    return jsonify(success=True, data={
+    return jsonify(status="success", message="Login successful", data={
         "user_id": user.id,
         "full_name": user.full_name,
         "phone_number": user.phone,
+        "is_new_user": False,
         "access_token": access_token,
         "refresh_token": refresh_token,
         "sos_token": sos_token,
@@ -290,40 +269,30 @@ def refresh():
     token_str = body_data.get('refresh_token') or _extract_bearer(request)
 
     if not token_str:
-        return jsonify(success=False, error={
-            "code": "REFRESH_TOKEN_INVALID",
-            "message": "Refresh token is required (body or Authorization header)."
-        }), 401
+        return jsonify(status="error", error_code="REFRESH_TOKEN_INVALID",
+                       message="Refresh token is required (body or Authorization header)."), 401
 
     # Decode and validate the token
     try:
         decoded = decode_token(token_str)
     except JWTDecodeError as e:
         if 'expired' in str(e).lower():
-            return jsonify(success=False, error={
-                "code": "REFRESH_TOKEN_EXPIRED",
-                "message": "Refresh token has expired. Please log in again."
-            }), 401
-        return jsonify(success=False, error={
-            "code": "REFRESH_TOKEN_INVALID",
-            "message": "Invalid refresh token."
-        }), 401
+            return jsonify(status="error", error_code="REFRESH_TOKEN_EXPIRED",
+                           message="Refresh token has expired. Please log in again."), 401
+        return jsonify(status="error", error_code="REFRESH_TOKEN_INVALID",
+                       message="Invalid refresh token."), 401
 
     if decoded.get('type') != 'refresh':
-        return jsonify(success=False, error={
-            "code": "TOKEN_INVALID",
-            "message": "Provided token is not a refresh token."
-        }), 401
+        return jsonify(status="error", error_code="TOKEN_INVALID",
+                       message="Provided token is not a refresh token."), 401
 
     jti = decoded.get('jti')
     identity = decoded.get('sub')
 
     # Rotation guard: fail if this refresh token was already used
     if RevokedToken.query.filter_by(jti=jti).first():
-        return jsonify(success=False, error={
-            "code": "REFRESH_TOKEN_REUSED",
-            "message": "Refresh token has already been used. Please log in again."
-        }), 401
+        return jsonify(status="error", error_code="REFRESH_TOKEN_REUSED",
+                       message="Refresh token has already been used. Please log in again."), 401
 
     # Rotate: revoke the old refresh token, issue fresh pair
     db.session.add(RevokedToken(jti=jti, token_type='refresh'))
@@ -334,7 +303,7 @@ def refresh():
 
     db.session.commit()
 
-    return jsonify(success=True, data={
+    return jsonify(status="success", message="Token refreshed", data={
         "access_token": access_token,
         "refresh_token": new_refresh_token,
         "expires_in": expires_in
@@ -362,13 +331,14 @@ def logout():
         except JWTDecodeError:
             pass
 
-    return jsonify(success=True, message="Logged out successfully"), 200
+    return jsonify(status="success", message="Logged out successfully"), 200
 
 @auth_bp.route('/validate', methods=['GET'])
 @jwt_required()
 def validate_token():
     current_user_id = get_jwt_identity()
-    return jsonify(success=True, data={"user_id": current_user_id, "is_valid": True}), 200
+    return jsonify(status="success", message="Token is valid",
+                   data={"user_id": current_user_id, "is_valid": True}), 200
 
 
 # ------------------------------------------------------------------ #
@@ -380,38 +350,35 @@ def validate_token():
 def resend_otp():
     """Resend a verification OTP for an unverified phone number.
 
-    Returns the OTP in the response so the Android app can send it via SMS.
+    Triggers Twilio Verify to resend the OTP. The code is NOT returned
+    in the response — Twilio delivers it directly to the user's phone.
     """
     schema = ResendOTPSchema()
     try:
         data = schema.load(request.json)
     except ValidationError as err:
-        return jsonify(success=False, error={
-            "code": "VALIDATION_ERROR",
-            "message": "Invalid request",
-            "details": err.messages
-        }), 400
+        return jsonify(status="error", error_code="VALIDATION_ERROR",
+                       message="Invalid request", details=err.messages), 400
 
     phone = data['phone_number']
 
     user = User.query.filter_by(phone=phone).first()
     if not user:
         # Don't reveal whether the number is registered
-        return jsonify(success=True, message="If the number is registered, a new OTP has been generated.", data={
-            "expires_in": int(current_app.config.get('OTP_EXPIRY_SECONDS', 300))
-        }), 200
+        return jsonify(status="success",
+                       message="If the number is registered, a new OTP will be sent.",
+                       data={"expires_in": int(current_app.config.get('OTP_EXPIRY_SECONDS', 300))}), 200
 
     if user.is_verified:
-        return jsonify(success=False, error={
-            "code": "ALREADY_VERIFIED",
-            "message": "Phone number is already verified."
-        }), 400
+        return jsonify(status="error", error_code="ALREADY_VERIFIED",
+                       message="Phone number is already verified."), 400
 
-    otp_code = generate_otp(length=6)
-    store_otp(phone=phone, otp_code=otp_code, purpose='phone_verification')
+    sent, err = send_otp_via_verify(phone)
+    if not sent:
+        return jsonify(status="error", error_code="SMS_FAILED",
+                       message="Failed to send OTP. Please try again."), 502
 
-    return jsonify(success=True, message="OTP generated successfully.", data={
-        "otp_code": otp_code,
+    return jsonify(status="success", message="OTP resent via SMS", data={
         "expires_in": int(current_app.config.get('OTP_EXPIRY_SECONDS', 300))
     }), 200
 
@@ -419,36 +386,74 @@ def resend_otp():
 @auth_bp.route('/forgot-password', methods=['POST'])
 @limiter.limit("3/15minutes")
 def forgot_password():
-    """Generate a password-reset OTP for the given phone number.
+    """Send a password-reset OTP for the given phone number via Twilio Verify.
 
-    Returns the OTP so the Android app can send it to the user via SMS.
+    The OTP is NOT returned in the response — Twilio delivers it directly.
+    Follow up with POST /reset-password to set the new password.
     """
     schema = ForgotPasswordSchema()
     try:
         data = schema.load(request.json)
     except ValidationError as err:
-        return jsonify(success=False, error={
-            "code": "VALIDATION_ERROR",
-            "message": "Invalid request",
-            "details": err.messages
-        }), 400
+        return jsonify(status="error", error_code="VALIDATION_ERROR",
+                       message="Invalid request", details=err.messages), 400
 
     phone = data['phone_number']
     user = User.query.filter_by(phone=phone).first()
 
     if not user:
         # Don't reveal whether the number is registered
-        return jsonify(success=True, message="If an account exists, a reset OTP has been generated.", data={
-            "expires_in": int(current_app.config.get('OTP_EXPIRY_SECONDS', 300))
-        }), 200
+        return jsonify(status="success",
+                       message="If this number exists, an OTP will be sent.",
+                       data={"expires_in": int(current_app.config.get('OTP_EXPIRY_SECONDS', 300))}), 200
 
-    otp_code = generate_otp(length=6)
-    store_otp(phone=phone, otp_code=otp_code, purpose='reset_password')
+    sent, err = send_otp_via_verify(phone)
+    if not sent:
+        return jsonify(status="error", error_code="SMS_FAILED",
+                       message="Failed to send OTP. Please try again."), 502
 
-    return jsonify(success=True, message="Password reset OTP generated.", data={
-        "otp_code": otp_code,
+    return jsonify(status="success", message="Password reset OTP sent via SMS", data={
         "expires_in": int(current_app.config.get('OTP_EXPIRY_SECONDS', 300))
     }), 200
+
+
+@auth_bp.route('/reset-password', methods=['POST'])
+@limiter.limit("3/15minutes")
+def reset_password():
+    """Verify the Twilio OTP and set a new password.
+
+    Use this after POST /forgot-password delivers the OTP to the user's phone.
+    """
+    schema = ResetPasswordSchema()
+    try:
+        data = schema.load(request.json)
+    except ValidationError as err:
+        return jsonify(status="error", error_code="VALIDATION_ERROR",
+                       message="Invalid request", details=err.messages), 400
+
+    phone = data['phone_number']
+    otp_code = data['otp_code']
+    new_password = data['new_password']
+
+    user = User.query.filter_by(phone=phone).first()
+    if not user:
+        return jsonify(status="error", error_code="NOT_FOUND",
+                       message="User not found."), 404
+
+    valid, msg = check_otp_via_verify(phone=phone, code=otp_code)
+    if not valid:
+        return jsonify(status="error", error_code="OTP_INVALID", message=msg), 422
+
+    if not validate_password(new_password):
+        return jsonify(status="error", error_code="VALIDATION_ERROR",
+                       message="Password is too weak."), 400
+
+    user.password_hash = bcrypt.hashpw(
+        new_password.encode('utf-8'), bcrypt.gensalt()
+    ).decode('utf-8')
+    db.session.commit()
+
+    return jsonify(status="success", message="Password reset successfully."), 200
 
 
 # ------------------------------------------------------------------ #
@@ -461,11 +466,8 @@ def google_auth():
     try:
         data = schema.load(request.json)
     except ValidationError as err:
-        return jsonify(success=False, error={
-            "code": "VALIDATION_ERROR",
-            "message": "Invalid request",
-            "details": err.messages
-        }), 400
+        return jsonify(status="error", error_code="VALIDATION_ERROR",
+                       message="Invalid request", details=err.messages), 400
 
     id_token = data['id_token']
 
@@ -492,7 +494,7 @@ def google_auth():
 
     access_token, refresh_token, sos_token, expires_in = _make_tokens(user.id)
 
-    return jsonify(success=True, data={
+    return jsonify(status="success", message="Google login successful", data={
         "user_id": user.id,
         "full_name": user.full_name,
         "email": user.email,
@@ -501,4 +503,4 @@ def google_auth():
         "refresh_token": refresh_token,
         "sos_token": sos_token,
         "expires_in": expires_in
-    }, message="Login successful"), 200
+    }), 200

@@ -33,3 +33,9 @@ class RefreshTokenSchema(Schema):
 
 class GoogleLoginSchema(Schema):
     id_token = fields.Str(required=True)
+
+
+class ResetPasswordSchema(Schema):
+    phone_number = fields.Str(required=True, validate=validate.Length(min=10))
+    otp_code = fields.Str(required=True, validate=validate.Length(equal=6))
+    new_password = fields.Str(required=True, validate=validate.Length(min=8))

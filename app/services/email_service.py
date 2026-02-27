@@ -21,19 +21,13 @@ def _send_email_thread(app, subject, recipient, html_body, sender):
 
 
 def _dispatch_email(subject, to_email, html_body):
-    """Dispatch an email in a background thread via Flask-Mail.
-
-    Uses MAIL_SERVER / MAIL_USERNAME / MAIL_PASSWORD from config.
-    Point MAIL_SERVER at smtp.sendgrid.net and set MAIL_USERNAME=apikey,
-    MAIL_PASSWORD=<SendGrid API key> for production on Render.
-    """
-    sender = current_app.config.get('MAIL_USERNAME')
-    mail_password = current_app.config.get('MAIL_PASSWORD')
+    """Dispatch an email in a background thread via Flask-Mail / SendGrid SMTP relay."""
+    sender = current_app.config.get('MAIL_SENDER')      # From address: fyear2022.26@gmail.com
+    mail_password = current_app.config.get('MAIL_PASSWORD')  # SendGrid API key
 
     if not sender or not mail_password:
         logger.warning(
-            "Email not sent — MAIL_USERNAME or MAIL_PASSWORD is not set. "
-            "Set MAIL_SERVER=smtp.sendgrid.net, MAIL_USERNAME=apikey, "
+            "Email not sent — set MAIL_SENDER=<your email> and "
             "MAIL_PASSWORD=<SendGrid API key> in your environment variables."
         )
         return False

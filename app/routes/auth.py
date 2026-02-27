@@ -6,7 +6,8 @@ from app.models.settings import UserSettings
 from app.models.trusted_contact import TrustedContact
 from app.models.revoked_token import RevokedToken
 from app.utils.validators import validate_password
-from app.services.sms_service import send_otp_via_verify, check_otp_via_verify
+from app.utils.otp import generate_otp, store_otp, verify_otp
+from app.services.sms_service import send_otp_sms
 from app.schemas.auth_schema import (
     PhoneRegisterSchema, PhoneLoginSchema,
     RefreshTokenSchema, ResendOTPSchema,
@@ -110,8 +111,9 @@ def _extract_bearer(request_obj) -> str | None:
 def register_phone():
     """Register a new user with phone number.
 
-    Triggers Twilio Verify to send a 6-digit OTP to the user's phone.
-    The OTP is NOT returned in the response — Twilio delivers it directly.
+    The backend generates a 6-digit OTP, stores it in the DB, and sends
+    it to the user's phone via Twilio Messaging (SMS). The OTP is NOT
+    returned in the response — Twilio delivers it directly.
     """
     schema = PhoneRegisterSchema()
     try:
@@ -151,13 +153,12 @@ def register_phone():
     )
     db.session.add(default_settings)
 
-    sent, err = send_otp_via_verify(new_user.phone)
-    if not sent:
-        db.session.rollback()
-        return jsonify(status="error", error_code="SMS_FAILED",
-                       message="Failed to send OTP. Please try again."), 502
+    otp_code = generate_otp(length=6)
+    store_otp(phone=new_user.phone, otp_code=otp_code, purpose='phone_verification')
 
     db.session.commit()
+
+    send_otp_sms(new_user.phone, otp_code)
 
     return jsonify(status="success", message="OTP sent to your phone via SMS", data={
         "phone_number": new_user.phone,
@@ -178,7 +179,7 @@ def verify_phone_otp():
     phone = data['phone_number']
     otp_code = data['otp_code']
 
-    valid, msg = check_otp_via_verify(phone=phone, code=otp_code)
+    valid, msg = verify_otp(phone=phone, otp_code=otp_code, purpose='phone_verification')
     if not valid:
         return jsonify(status="error", error_code="OTP_INVALID", message=msg), 422
 
@@ -350,8 +351,8 @@ def validate_token():
 def resend_otp():
     """Resend a verification OTP for an unverified phone number.
 
-    Triggers Twilio Verify to resend the OTP. The code is NOT returned
-    in the response — Twilio delivers it directly to the user's phone.
+    Generates a fresh OTP, stores it in the DB, and sends it via
+    Twilio Messaging. The code is NOT returned in the response.
     """
     schema = ResendOTPSchema()
     try:
@@ -373,10 +374,9 @@ def resend_otp():
         return jsonify(status="error", error_code="ALREADY_VERIFIED",
                        message="Phone number is already verified."), 400
 
-    sent, err = send_otp_via_verify(phone)
-    if not sent:
-        return jsonify(status="error", error_code="SMS_FAILED",
-                       message="Failed to send OTP. Please try again."), 502
+    otp_code = generate_otp(length=6)
+    store_otp(phone=phone, otp_code=otp_code, purpose='phone_verification')
+    send_otp_sms(phone, otp_code)
 
     return jsonify(status="success", message="OTP resent via SMS", data={
         "expires_in": int(current_app.config.get('OTP_EXPIRY_SECONDS', 300))
@@ -386,10 +386,10 @@ def resend_otp():
 @auth_bp.route('/forgot-password', methods=['POST'])
 @limiter.limit("3/15minutes")
 def forgot_password():
-    """Send a password-reset OTP for the given phone number via Twilio Verify.
+    """Send a password-reset OTP via Twilio Messaging.
 
-    The OTP is NOT returned in the response — Twilio delivers it directly.
-    Follow up with POST /reset-password to set the new password.
+    Generates OTP, stores in DB, sends via Twilio SMS. The code is NOT
+    returned in the response. Follow up with POST /reset-password.
     """
     schema = ForgotPasswordSchema()
     try:
@@ -407,10 +407,9 @@ def forgot_password():
                        message="If this number exists, an OTP will be sent.",
                        data={"expires_in": int(current_app.config.get('OTP_EXPIRY_SECONDS', 300))}), 200
 
-    sent, err = send_otp_via_verify(phone)
-    if not sent:
-        return jsonify(status="error", error_code="SMS_FAILED",
-                       message="Failed to send OTP. Please try again."), 502
+    otp_code = generate_otp(length=6)
+    store_otp(phone=phone, otp_code=otp_code, purpose='reset_password')
+    send_otp_sms(phone, otp_code)
 
     return jsonify(status="success", message="Password reset OTP sent via SMS", data={
         "expires_in": int(current_app.config.get('OTP_EXPIRY_SECONDS', 300))
@@ -440,7 +439,7 @@ def reset_password():
         return jsonify(status="error", error_code="NOT_FOUND",
                        message="User not found."), 404
 
-    valid, msg = check_otp_via_verify(phone=phone, code=otp_code)
+    valid, msg = verify_otp(phone=phone, otp_code=otp_code, purpose='reset_password')
     if not valid:
         return jsonify(status="error", error_code="OTP_INVALID", message=msg), 422
 

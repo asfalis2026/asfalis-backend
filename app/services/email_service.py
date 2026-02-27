@@ -4,30 +4,107 @@ from app.extensions import mail
 from flask import current_app
 import logging
 import threading
+import urllib.request
+import urllib.error
+import json
 
 logger = logging.getLogger(__name__)
 
 
-def _send_email_thread(app, subject, recipient, html_body, sender):
-    """Send email in a background thread."""
+# ------------------------------------------------------------------ #
+# SendGrid sender (HTTP API — works on Render / any host)             #
+# ------------------------------------------------------------------ #
+
+def _send_via_sendgrid(app, api_key, from_email, to_email, subject, html_body):
+    """Send email via SendGrid HTTP API in a background thread.
+
+    Uses only stdlib urllib so no extra dependency is needed.
+    """
+    with app.app_context():
+        payload = json.dumps({
+            "personalizations": [{"to": [{"email": to_email}]}],
+            "from": {"email": from_email},
+            "subject": subject,
+            "content": [{"type": "text/html", "value": html_body}]
+        }).encode('utf-8')
+
+        req = urllib.request.Request(
+            "https://api.sendgrid.com/v3/mail/send",
+            data=payload,
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json"
+            },
+            method="POST"
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                logger.info(f"SendGrid: email sent to {to_email} (status {resp.status})")
+        except urllib.error.HTTPError as e:
+            body = e.read().decode('utf-8', errors='replace')
+            logger.error(f"SendGrid HTTP error {e.code} sending to {to_email}: {body}")
+        except Exception as e:
+            logger.error(f"SendGrid failed sending to {to_email}: {e}")
+
+
+# ------------------------------------------------------------------ #
+# SMTP sender (Flask-Mail — local dev only, blocked on Render)        #
+# ------------------------------------------------------------------ #
+
+def _send_via_smtp(app, subject, recipient, html_body, sender):
+    """Send email via SMTP in a background thread (local dev fallback)."""
     with app.app_context():
         try:
             msg = Message(subject, sender=sender, recipients=[recipient])
             msg.html = html_body
             mail.send(msg)
-            logger.info(f"Email sent to {recipient}")
+            logger.info(f"SMTP: email sent to {recipient}")
         except Exception as e:
-            logger.error(f"Failed to send email to {recipient}: {str(e)}")
+            logger.error(f"SMTP: failed to send email to {recipient}: {str(e)}")
 
+
+# ------------------------------------------------------------------ #
+# Public dispatcher — picks the right backend automatically           #
+# ------------------------------------------------------------------ #
 
 def _dispatch_email(subject, to_email, html_body):
-    """Dispatch an email in a background thread."""
-    sender = current_app.config.get('MAIL_USERNAME')
-    if not sender:
-        logger.warning("MAIL_USERNAME not set. Email sending will fail.")
-        return False
+    """Send an email using SendGrid (if SENDGRID_API_KEY is set) or SMTP.
+
+    Render blocks outbound SMTP ports, so SendGrid is required in production.
+    For local development SMTP is used as a fallback when no API key is set.
+    """
     app = current_app._get_current_object()
-    t = threading.Thread(target=_send_email_thread, args=(app, subject, to_email, html_body, sender), daemon=True)
+    api_key = current_app.config.get('SENDGRID_API_KEY')
+    from_email = current_app.config.get('MAIL_USERNAME')
+
+    if not from_email:
+        logger.warning("Email not sent — MAIL_USERNAME is not set.")
+        return False
+
+    if api_key:
+        # Production path: SendGrid over HTTPS (port 443) — works on Render
+        t = threading.Thread(
+            target=_send_via_sendgrid,
+            args=(app, api_key, from_email, to_email, subject, html_body),
+            daemon=True
+        )
+        t.start()
+        return True
+
+    # Local dev fallback: SMTP via Flask-Mail
+    mail_password = current_app.config.get('MAIL_PASSWORD')
+    if not mail_password:
+        logger.warning(
+            "Email not sent — set SENDGRID_API_KEY (production) "
+            "or MAIL_PASSWORD (local dev) to enable email sending."
+        )
+        return False
+
+    t = threading.Thread(
+        target=_send_via_smtp,
+        args=(app, subject, to_email, html_body, from_email),
+        daemon=True
+    )
     t.start()
     return True
 

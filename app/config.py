@@ -23,6 +23,9 @@ class Config:
     MAIL_USERNAME = os.environ.get('MAIL_USERNAME')   # SMTP login — literally 'apikey' for SendGrid
     MAIL_PASSWORD = os.environ.get('MAIL_PASSWORD')   # SendGrid API key
     MAIL_SENDER = os.environ.get('MAIL_SENDER')       # From address shown to recipients
+    # Flask-Mail requires MAIL_DEFAULT_SENDER; use display-name tuple for better deliverability
+    _sender_addr = os.environ.get('MAIL_SENDER', '')
+    MAIL_DEFAULT_SENDER = ('Asfalis', _sender_addr) if _sender_addr else None
     
     TWILIO_ACCOUNT_SID = os.environ.get('TWILIO_ACCOUNT_SID')
     TWILIO_AUTH_TOKEN = os.environ.get('TWILIO_AUTH_TOKEN')

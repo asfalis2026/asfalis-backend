@@ -12,12 +12,20 @@ def _send_email_thread(app, subject, recipient, html_body, sender):
     """Send email via Flask-Mail in a background thread."""
     with app.app_context():
         try:
-            msg = Message(subject, sender=sender, recipients=[recipient])
+            # Use a (display_name, address) tuple so the From header reads
+            # "Asfalis <addr>" instead of a bare address, which improves
+            # deliverability and reduces spam-folder placement.
+            display_sender = ('Asfalis', sender) if isinstance(sender, str) else sender
+            msg = Message(subject, sender=display_sender, recipients=[recipient])
             msg.html = html_body
+            msg.extra_headers = {
+                'X-Mailer': 'Asfalis-Backend',
+                'Reply-To': sender if isinstance(sender, str) else sender[1],
+            }
             mail.send(msg)
             logger.info(f"Email sent to {recipient}")
         except Exception as e:
-            logger.error(f"Failed to send email to {recipient}: {str(e)}")
+            logger.error(f"Failed to send email to {recipient}: {str(e)}", exc_info=True)
 
 
 def _dispatch_email(subject, to_email, html_body):
@@ -28,8 +36,14 @@ def _dispatch_email(subject, to_email, html_body):
     if not sender or not mail_password:
         logger.warning(
             "Email not sent — set MAIL_SENDER=<your email> and "
-            "MAIL_PASSWORD=<SendGrid API key> in your environment variables."
+            "MAIL_PASSWORD=<SendGrid API key> in your environment variables. "
+            f"(MAIL_SENDER={'set' if sender else 'MISSING'}, "
+            f"MAIL_PASSWORD={'set' if mail_password else 'MISSING'})"
         )
+        return False
+
+    if not to_email:
+        logger.error("Email not sent — recipient email address is empty.")
         return False
 
     app = current_app._get_current_object()
@@ -39,6 +53,7 @@ def _dispatch_email(subject, to_email, html_body):
         daemon=True
     )
     t.start()
+    logger.info(f"Email dispatch thread started for {to_email} (subject: {subject!r})")
     return True
 
 

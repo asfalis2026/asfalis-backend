@@ -1,26 +1,61 @@
 
-from flask import Blueprint, request, jsonify
+from flask import Blueprint, request, jsonify, current_app
 from app.extensions import db, jwt, limiter
 from app.models.user import User
 from app.models.settings import UserSettings
 from app.models.trusted_contact import TrustedContact
+from app.models.revoked_token import RevokedToken
 from app.services.email_service import send_otp_email
 from app.utils.validators import validate_password, validate_phone
 from app.utils.otp import generate_otp, store_otp, verify_otp
 from app.schemas.auth_schema import (
-    EmailRegisterSchema, EmailLoginSchema, PhoneLoginSchema, 
+    EmailRegisterSchema, EmailLoginSchema, PhoneLoginSchema,
     VerifyOTPSchema, RefreshTokenSchema, ResendOtpSchema,
     ForgotPasswordSchema, GoogleLoginSchema, VerifyEmailOTPSchema
 )
 from flask_jwt_extended import (
-    create_access_token, create_refresh_token, jwt_required, 
-    get_jwt_identity, get_jwt
+    create_access_token, create_refresh_token, jwt_required,
+    get_jwt_identity, get_jwt, decode_token
 )
+from flask_jwt_extended.exceptions import JWTDecodeError
 from marshmallow import ValidationError
 import bcrypt
-from datetime import datetime
+from datetime import datetime, timedelta
 
 auth_bp = Blueprint('auth', __name__)
+
+
+# ------------------------------------------------------------------ #
+# Helpers                                                             #
+# ------------------------------------------------------------------ #
+
+def _make_tokens(user_id: str):
+    """Return (access_token, refresh_token, sos_token, expires_in).
+
+    sos_token is a long-lived access token (30 days by default) stored by
+    the Android app and used ONLY for /sos/trigger.  This ensures emergency
+    alerts always work even if the regular 15-minute access token has expired.
+    """
+    access_token = create_access_token(identity=user_id)
+    refresh_token = create_refresh_token(identity=user_id)
+
+    sos_days = current_app.config.get('JWT_SOS_TOKEN_EXPIRES_DAYS', 30)
+    sos_token = create_access_token(
+        identity=user_id,
+        expires_delta=timedelta(days=sos_days),
+        additional_claims={"token_purpose": "sos"}
+    )
+    expires_in = int(current_app.config['JWT_ACCESS_TOKEN_EXPIRES'].total_seconds())
+    return access_token, refresh_token, sos_token, expires_in
+
+
+def _extract_bearer(request_obj) -> str | None:
+    """Return the raw token from the Authorization: Bearer header, or None."""
+    header = request_obj.headers.get('Authorization', '')
+    if header.startswith('Bearer '):
+        return header[len('Bearer '):]
+    return None
+
 
 @auth_bp.route('/register/email', methods=['POST'])
 def register_email():
@@ -137,15 +172,16 @@ def verify_email_otp():
     user.is_verified = True
     db.session.commit()
 
-    access_token = create_access_token(identity=user.id)
-    refresh_token = create_refresh_token(identity=user.id)
+    access_token, refresh_token, sos_token, expires_in = _make_tokens(user.id)
 
     return jsonify(success=True, data={
         "user_id": user.id,
         "full_name": user.full_name,
         "email": user.email,
         "access_token": access_token,
-        "refresh_token": refresh_token
+        "refresh_token": refresh_token,
+        "sos_token": sos_token,
+        "expires_in": expires_in
     }, message="Email verified successfully"), 200
 
 @auth_bp.route('/login/email', methods=['POST'])
@@ -165,15 +201,16 @@ def login_email():
     if not bcrypt.checkpw(data['password'].encode('utf-8'), user.password_hash.encode('utf-8')):
         return jsonify(success=False, error={"code": "UNAUTHORIZED", "message": "Invalid credentials"}), 401
 
-    access_token = create_access_token(identity=user.id)
-    refresh_token = create_refresh_token(identity=user.id)
+    access_token, refresh_token, sos_token, expires_in = _make_tokens(user.id)
 
     return jsonify(success=True, data={
         "user_id": user.id,
         "full_name": user.full_name,
         "email": user.email,
         "access_token": access_token,
-        "refresh_token": refresh_token
+        "refresh_token": refresh_token,
+        "sos_token": sos_token,
+        "expires_in": expires_in
     }), 200
 
 @auth_bp.route('/send-otp', methods=['POST'])
@@ -230,27 +267,106 @@ def verify_otp_route():
         db.session.add(default_settings)
         db.session.commit()
 
-    access_token = create_access_token(identity=user.id)
-    refresh_token = create_refresh_token(identity=user.id)
+    access_token, refresh_token, sos_token, expires_in = _make_tokens(user.id)
 
     return jsonify(success=True, data={
         "user_id": user.id,
         "is_new_user": is_new_user,
         "access_token": access_token,
-        "refresh_token": refresh_token
+        "refresh_token": refresh_token,
+        "sos_token": sos_token,
+        "expires_in": expires_in
     }), 200
 
 @auth_bp.route('/refresh', methods=['POST'])
-@jwt_required(refresh=True)
 def refresh():
-    identity = get_jwt_identity()
+    """Exchange a valid refresh token for a new access + refresh token pair.
+
+    Accepts the refresh token from:
+      1. JSON body  { "refresh_token": "..." }   ← Android AuthInterceptor sends this
+      2. Authorization: Bearer <token> header    ← legacy / curl usage
+
+    Implements refresh token rotation: the presented refresh token is revoked
+    immediately and a brand-new one is issued.  If the same token is presented
+    again (e.g. parallel requests), the server returns REFRESH_TOKEN_REUSED.
+    """
+    body_data = request.get_json(silent=True) or {}
+    token_str = body_data.get('refresh_token') or _extract_bearer(request)
+
+    if not token_str:
+        return jsonify(success=False, error={
+            "code": "REFRESH_TOKEN_INVALID",
+            "message": "Refresh token is required (body or Authorization header)."
+        }), 401
+
+    # Decode and validate the token
+    try:
+        decoded = decode_token(token_str)
+    except JWTDecodeError as e:
+        if 'expired' in str(e).lower():
+            return jsonify(success=False, error={
+                "code": "REFRESH_TOKEN_EXPIRED",
+                "message": "Refresh token has expired. Please log in again."
+            }), 401
+        return jsonify(success=False, error={
+            "code": "REFRESH_TOKEN_INVALID",
+            "message": "Invalid refresh token."
+        }), 401
+
+    if decoded.get('type') != 'refresh':
+        return jsonify(success=False, error={
+            "code": "TOKEN_INVALID",
+            "message": "Provided token is not a refresh token."
+        }), 401
+
+    jti = decoded.get('jti')
+    identity = decoded.get('sub')
+
+    # Rotation guard: fail if this refresh token was already used
+    if RevokedToken.query.filter_by(jti=jti).first():
+        return jsonify(success=False, error={
+            "code": "REFRESH_TOKEN_REUSED",
+            "message": "Refresh token has already been used. Please log in again."
+        }), 401
+
+    # Rotate: revoke the old refresh token, issue fresh pair
+    db.session.add(RevokedToken(jti=jti, token_type='refresh'))
+
     access_token = create_access_token(identity=identity)
-    return jsonify(success=True, data={"access_token": access_token}), 200
+    new_refresh_token = create_refresh_token(identity=identity)
+    expires_in = int(current_app.config['JWT_ACCESS_TOKEN_EXPIRES'].total_seconds())
+
+    db.session.commit()
+
+    return jsonify(success=True, data={
+        "access_token": access_token,
+        "refresh_token": new_refresh_token,
+        "expires_in": expires_in
+    }), 200
 
 @auth_bp.route('/logout', methods=['POST'])
 @jwt_required()
 def logout():
-    # In a real app we'd blacklist the token in the database here if needed.
+    """Invalidate the user's refresh token so it cannot be reused after logout.
+
+    Accepts the refresh token (to revoke) from the JSON body:
+      { "refresh_token": "..." }
+    The access token in the Authorization header identifies the caller as usual.
+    """
+    body_data = request.get_json(silent=True) or {}
+    refresh_token_str = body_data.get('refresh_token')
+
+    if refresh_token_str:
+        try:
+            decoded = decode_token(refresh_token_str)
+            jti = decoded.get('jti')
+            if jti and not RevokedToken.query.filter_by(jti=jti).first():
+                db.session.add(RevokedToken(jti=jti, token_type='refresh'))
+                db.session.commit()
+        except JWTDecodeError:
+            # Malformed / already-expired refresh token — just proceed with logout
+            pass
+
     return jsonify(success=True, message="Logged out successfully"), 200
 
 @auth_bp.route('/validate', methods=['GET'])
@@ -337,8 +453,7 @@ def google_auth():
         db.session.add(UserSettings(user_id=user.id))
         db.session.commit()
 
-    access_token = create_access_token(identity=user.id)
-    refresh_token = create_refresh_token(identity=user.id)
+    access_token, refresh_token, sos_token, expires_in = _make_tokens(user.id)
 
     return jsonify(success=True, data={
         "user_id": user.id,
@@ -346,5 +461,7 @@ def google_auth():
         "email": user.email,
         "is_new_user": is_new,
         "access_token": access_token,
-        "refresh_token": refresh_token
+        "refresh_token": refresh_token,
+        "sos_token": sos_token,
+        "expires_in": expires_in
     }, message="Login successful"), 200

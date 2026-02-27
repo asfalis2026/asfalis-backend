@@ -10,6 +10,9 @@ class Config:
     JWT_SECRET_KEY = os.environ.get('JWT_SECRET_KEY') or 'jwt-secret-key'
     JWT_ACCESS_TOKEN_EXPIRES = timedelta(seconds=int(os.environ.get('JWT_ACCESS_TOKEN_EXPIRES', 900)))
     JWT_REFRESH_TOKEN_EXPIRES = timedelta(seconds=int(os.environ.get('JWT_REFRESH_TOKEN_EXPIRES', 2592000)))
+    # Long-lived SOS token: issued at login, stored by the app, used ONLY for /sos/trigger
+    # so that emergency alerts always work even when the regular access token has expired.
+    JWT_SOS_TOKEN_EXPIRES_DAYS = int(os.environ.get('JWT_SOS_TOKEN_EXPIRES_DAYS', 30))
     
     OTP_EXPIRY_SECONDS = int(os.environ.get('OTP_EXPIRY_SECONDS', 300))
     MAX_OTP_ATTEMPTS = int(os.environ.get('MAX_OTP_ATTEMPTS', 5))

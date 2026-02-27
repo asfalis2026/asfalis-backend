@@ -73,13 +73,34 @@ def send_otp_email(to_email, otp_code):
 
 
 def send_contact_added_email(to_email, contact_name, user_name, twilio_number, sandbox_code):
-    """Sends an email to a newly added trusted contact with instructions."""
+    """Sends an email to a newly added trusted contact with instructions.
+
+    The WhatsApp sandbox section is only included when twilio_number and
+    sandbox_code are both configured.  If they are missing the email is still
+    delivered so the contact at least knows they were added.
+    """
     try:
         subject = f"{user_name} added you as a Trusted Contact - Asfalis"
 
-        clean_number = twilio_number.replace('+', '').replace('-', '').replace(' ', '')
-        encoded_code = sandbox_code.replace(' ', '%20')
-        whatsapp_link = f"https://wa.me/{clean_number}?text={encoded_code}"
+        # Build the WhatsApp join section only when Twilio is configured
+        if twilio_number and sandbox_code:
+            clean_number = twilio_number.replace('+', '').replace('-', '').replace(' ', '')
+            encoded_code = sandbox_code.replace(' ', '%20')
+            whatsapp_link = f"https://wa.me/{clean_number}?text={encoded_code}"
+            whatsapp_section = f"""
+                    <hr style="border: 0; border-top: 1px solid #eee; margin: 20px 0;">
+                    <h3>⚠️ Important Next Step</h3>
+                    <p>To ensure you receive these emergency alerts on WhatsApp, you <strong>must</strong> join our sandbox environment.</p>
+                    <p>1. Save this number: <strong>{twilio_number}</strong></p>
+                    <p>2. Send the following code to that number on WhatsApp:</p>
+                    <div class="code-box">{sandbox_code}</div>
+                    <p>Or simply click the button below:</p>
+                    <div style="text-align: center;">
+                        <a href="{whatsapp_link}" class="button">Join on WhatsApp</a>
+                    </div>"""
+        else:
+            logger.warning("Twilio number/sandbox not configured — sending contact email without WhatsApp section.")
+            whatsapp_section = ""
 
         html_body = f"""
         <!DOCTYPE html>
@@ -102,16 +123,7 @@ def send_contact_added_email(to_email, contact_name, user_name, twilio_number, s
                     <p>Hello <strong>{contact_name}</strong>,</p>
                     <p><strong>{user_name}</strong> has added you as a trusted contact in <strong>Asfalis</strong>, their personal safety app.</p>
                     <p>This means you will receive immediate alerts with their location if they trigger an SOS.</p>
-                    <hr style="border: 0; border-top: 1px solid #eee; margin: 20px 0;">
-                    <h3>⚠️ Important Next Step</h3>
-                    <p>To ensure you receive these emergency alerts on WhatsApp, you <strong>must</strong> join our sandbox environment.</p>
-                    <p>1. Save this number: <strong>{twilio_number}</strong></p>
-                    <p>2. Send the following code to that number on WhatsApp:</p>
-                    <div class="code-box">{sandbox_code}</div>
-                    <p>Or simply click the button below:</p>
-                    <div style="text-align: center;">
-                        <a href="{whatsapp_link}" class="button">Join on WhatsApp</a>
-                    </div>
+                    {whatsapp_section}
                 </div>
                 <div class="footer"><p>Asfalis - Your Safety, Our Priority.</p></div>
             </div>

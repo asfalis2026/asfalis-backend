@@ -49,7 +49,6 @@ def add_contact():
     )
     
     db.session.add(new_contact)
-    db.session.add(new_contact)
     db.session.commit()
 
     # Send notification email if email is provided

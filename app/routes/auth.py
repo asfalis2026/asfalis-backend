@@ -6,11 +6,11 @@ from app.models.settings import UserSettings
 from app.models.trusted_contact import TrustedContact
 from app.models.revoked_token import RevokedToken
 from app.services.email_service import send_otp_email
-from app.utils.validators import validate_password, validate_phone
+from app.utils.validators import validate_password
 from app.utils.otp import generate_otp, store_otp, verify_otp
 from app.schemas.auth_schema import (
-    EmailRegisterSchema, EmailLoginSchema, PhoneLoginSchema,
-    VerifyOTPSchema, RefreshTokenSchema, ResendOtpSchema,
+    EmailRegisterSchema, EmailLoginSchema,
+    RefreshTokenSchema, ResendEmailOtpSchema,
     ForgotPasswordSchema, GoogleLoginSchema, VerifyEmailOTPSchema
 )
 from flask_jwt_extended import (
@@ -201,6 +201,9 @@ def login_email():
     if not bcrypt.checkpw(data['password'].encode('utf-8'), user.password_hash.encode('utf-8')):
         return jsonify(success=False, error={"code": "UNAUTHORIZED", "message": "Invalid credentials"}), 401
 
+    if not user.is_verified:
+        return jsonify(success=False, error={"code": "EMAIL_NOT_VERIFIED", "message": "Please verify your email before logging in."}), 403
+
     access_token, refresh_token, sos_token, expires_in = _make_tokens(user.id)
 
     return jsonify(success=True, data={
@@ -213,70 +216,7 @@ def login_email():
         "expires_in": expires_in
     }), 200
 
-@auth_bp.route('/send-otp', methods=['POST'])
-@limiter.limit("3/15minutes")
-def send_otp_route():
-    schema = PhoneLoginSchema()
-    try:
-        data = schema.load(request.json)
-    except ValidationError as err:
-        return jsonify(success=False, error={"code": "VALIDATION_ERROR", "message": "Invalid request", "details": err.messages}), 400
 
-    phone = data['phone']
-    # In production remove this mock
-    otp_code = generate_otp()
-    
-    # Store OTP
-    store_otp(phone, otp_code, 'login')
-
-    # Send SMS (Mock for now, would call SMS service)
-    print(f"------------ OTP for {phone}: {otp_code} ------------")
-
-    return jsonify(success=True, message="OTP sent successfully", data={"expires_in": 300}), 200
-
-@auth_bp.route('/verify-otp', methods=['POST'])
-def verify_otp_route():
-    schema = VerifyOTPSchema()
-    try:
-        data = schema.load(request.json)
-    except ValidationError as err:
-        return jsonify(success=False, error={"code": "VALIDATION_ERROR", "message": "Invalid request", "details": err.messages}), 400
-
-    phone = data['phone']
-    otp_code = data['otp_code']
-
-    valid, msg = verify_otp(phone, otp_code, 'login')
-    if not valid:
-        return jsonify(success=False, error={"code": "OTP_INVALID", "message": msg}), 422
-
-    user = User.query.filter_by(phone=phone).first()
-    is_new_user = False
-
-    if not user:
-        is_new_user = True
-        user = User(
-            full_name="New User", # Placeholder
-            phone=phone,
-            auth_provider='phone',
-            is_verified=True
-        )
-        db.session.add(user)
-        db.session.flush()
-        
-        default_settings = UserSettings(user_id=user.id)
-        db.session.add(default_settings)
-        db.session.commit()
-
-    access_token, refresh_token, sos_token, expires_in = _make_tokens(user.id)
-
-    return jsonify(success=True, data={
-        "user_id": user.id,
-        "is_new_user": is_new_user,
-        "access_token": access_token,
-        "refresh_token": refresh_token,
-        "sos_token": sos_token,
-        "expires_in": expires_in
-    }), 200
 
 @auth_bp.route('/refresh', methods=['POST'])
 def refresh():
@@ -378,23 +318,30 @@ def validate_token():
 @auth_bp.route('/resend-otp', methods=['POST'])
 @limiter.limit("3/15minutes")
 def resend_otp():
-    schema = ResendOtpSchema()
+    schema = ResendEmailOtpSchema()
     try:
         data = schema.load(request.json)
     except ValidationError as err:
         return jsonify(success=False, error={"code": "VALIDATION_ERROR", "message": "Invalid request", "details": err.messages}), 400
 
-    phone = data['phone']
-    # Check if user exists or if it's a new login flow? 
-    # For now, just resend if valid phone format
-    otp_code = generate_otp()
-    store_otp(phone, otp_code, 'login')
-    
-    print(f"------------ RESENT OTP for {phone}: {otp_code} ------------")
-    
-    # Return same format as send-otp
-    # OTP ID isn't currently used/returned by store_otp but could be added
-    return jsonify(success=True, message="OTP resent successfully", data={"expires_in": 300}), 200
+    email = data['email']
+
+    user = User.query.filter_by(email=email).first()
+    if not user:
+        # Return success to prevent user enumeration
+        return jsonify(success=True, message="If the email is registered, a new OTP has been sent.", data={"expires_in": 300}), 200
+
+    if user.is_verified:
+        return jsonify(success=False, error={"code": "ALREADY_VERIFIED", "message": "Email is already verified."}), 400
+
+    otp_code = generate_otp(length=6)
+    store_otp(email=email, otp_code=otp_code, purpose='email_verification')
+
+    email_sent = send_otp_email(email, otp_code)
+    if not email_sent:
+        return jsonify(success=False, error={"code": "EMAIL_FAILED", "message": "Failed to send OTP email. Please try again."}), 500
+
+    return jsonify(success=True, message="OTP resent successfully.", data={"expires_in": 300}), 200
 
 @auth_bp.route('/forgot-password', methods=['POST'])
 @limiter.limit("3/15minutes")

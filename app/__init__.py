@@ -1,7 +1,7 @@
 
 from flask import Flask, jsonify
 from app.config import Config
-from app.extensions import db, migrate, jwt, socketio, mail, cors, limiter
+from app.extensions import db, migrate, jwt, socketio, cors, limiter
 
 def create_app(config_class=Config):
     app = Flask(__name__)
@@ -70,7 +70,6 @@ def create_app(config_class=Config):
 
     socketio.init_app(app)
     from app.sockets import location_socket # Register socket events
-    mail.init_app(app)
     cors.init_app(app)
     limiter.init_app(app)
 

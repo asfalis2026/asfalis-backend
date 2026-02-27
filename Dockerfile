@@ -15,4 +15,4 @@ COPY entrypoint.sh .
 RUN chmod +x entrypoint.sh
 
 ENTRYPOINT ["./entrypoint.sh"]
-CMD ["gunicorn", "-w", "1", "--threads", "4", "--bind", "0.0.0.0:5000", "wsgi:app"]
+CMD ["gunicorn", "--log-level", "info", "--access-logfile", "-", "-w", "1", "--threads", "4", "--bind", "0.0.0.0:5000", "wsgi:app"]

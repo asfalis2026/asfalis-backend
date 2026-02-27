@@ -21,9 +21,9 @@ services:
         sync: false
       - key: TWILIO_PHONE_NUMBER
         sync: false
-      - key: MAIL_USERNAME
-        sync: false
       - key: MAIL_PASSWORD
+        sync: false
+      - key: MAIL_SENDER
         sync: false
 
 databases:

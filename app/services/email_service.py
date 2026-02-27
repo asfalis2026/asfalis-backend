@@ -1,44 +1,55 @@
 
-from flask_mail import Message
-from app.extensions import mail
 from flask import current_app
 import logging
-import threading
+import re
+import json
+import ssl
+import urllib.request
+import urllib.error
 
 logger = logging.getLogger(__name__)
 
+# SendGrid v3 Mail Send endpoint – one fast HTTP POST instead of 7+ SMTP
+# round-trips (TCP → TLS → AUTH → MAIL FROM → RCPT TO → DATA → QUIT).
+_SENDGRID_API_URL = "https://api.sendgrid.com/v3/mail/send"
+_TIMEOUT_SECONDS = 15
 
-def _send_email_thread(app, subject, recipient, html_body, sender):
-    """Send email via Flask-Mail in a background thread."""
-    with app.app_context():
-        try:
-            # Use a (display_name, address) tuple so the From header reads
-            # "Asfalis <addr>" instead of a bare address, which improves
-            # deliverability and reduces spam-folder placement.
-            display_sender = ('Asfalis', sender) if isinstance(sender, str) else sender
-            msg = Message(subject, sender=display_sender, recipients=[recipient])
-            msg.html = html_body
-            msg.extra_headers = {
-                'X-Mailer': 'Asfalis-Backend',
-                'Reply-To': sender if isinstance(sender, str) else sender[1],
-            }
-            mail.send(msg)
-            logger.info(f"Email sent to {recipient}")
-        except Exception as e:
-            logger.error(f"Failed to send email to {recipient}: {str(e)}", exc_info=True)
+# Build a proper SSL context using certifi's CA bundle.
+# macOS Python from python.org ships without system certs, which causes
+# "CERTIFICATE_VERIFY_FAILED" on every HTTPS call via urllib.
+try:
+    import certifi
+    _SSL_CTX = ssl.create_default_context(cafile=certifi.where())
+except ImportError:
+    _SSL_CTX = ssl.create_default_context()
+
+
+def _strip_html(html: str) -> str:
+    """Naive HTML-to-plain-text conversion for the text/plain fallback."""
+    text = re.sub(r'<style[^>]*>.*?</style>', '', html, flags=re.DOTALL)
+    text = re.sub(r'<br\s*/?>', '\n', text, flags=re.IGNORECASE)
+    text = re.sub(r'</p>', '\n\n', text, flags=re.IGNORECASE)
+    text = re.sub(r'<[^>]+>', '', text)
+    text = re.sub(r'\n{3,}', '\n\n', text)
+    return text.strip()
 
 
 def _dispatch_email(subject, to_email, html_body):
-    """Dispatch an email in a background thread via Flask-Mail / SendGrid SMTP relay."""
-    sender = current_app.config.get('MAIL_SENDER')      # From address: fyear2022.26@gmail.com
-    mail_password = current_app.config.get('MAIL_PASSWORD')  # SendGrid API key
+    """Send an email via the **SendGrid v3 HTTP API**.
 
-    if not sender or not mail_password:
-        logger.warning(
-            "Email not sent — set MAIL_SENDER=<your email> and "
-            "MAIL_PASSWORD=<SendGrid API key> in your environment variables. "
+    This replaces the old Flask-Mail / SMTP approach which was unreliable
+    because each send required 7+ network round-trips to smtp.sendgrid.net.
+    The HTTP API is a single POST with a 15-second timeout.
+    """
+    sender = current_app.config.get('MAIL_SENDER')
+    api_key = current_app.config.get('MAIL_PASSWORD')        # SendGrid API key
+
+    if not sender or not api_key:
+        logger.error(
+            "Email not sent — MAIL_SENDER and/or MAIL_PASSWORD are not "
+            "configured in environment variables. "
             f"(MAIL_SENDER={'set' if sender else 'MISSING'}, "
-            f"MAIL_PASSWORD={'set' if mail_password else 'MISSING'})"
+            f"MAIL_PASSWORD={'set' if api_key else 'MISSING'})"
         )
         return False
 
@@ -46,15 +57,48 @@ def _dispatch_email(subject, to_email, html_body):
         logger.error("Email not sent — recipient email address is empty.")
         return False
 
-    app = current_app._get_current_object()
-    t = threading.Thread(
-        target=_send_email_thread,
-        args=(app, subject, to_email, html_body, sender),
-        daemon=True
+    payload = {
+        "personalizations": [{"to": [{"email": to_email}]}],
+        "from": {"email": sender, "name": "Asfalis"},
+        "reply_to": {"email": sender, "name": "Asfalis"},
+        "subject": subject,
+        "content": [
+            {"type": "text/plain", "value": _strip_html(html_body)},
+            {"type": "text/html",  "value": html_body},
+        ],
+    }
+
+    data = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(
+        _SENDGRID_API_URL,
+        data=data,
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
     )
-    t.start()
-    logger.info(f"Email dispatch thread started for {to_email} (subject: {subject!r})")
-    return True
+
+    try:
+        with urllib.request.urlopen(req, timeout=_TIMEOUT_SECONDS, context=_SSL_CTX) as resp:
+            status = resp.status
+            # 202 = queued for delivery, 200 = sent
+            if status in (200, 202):
+                logger.info(f"Email sent to {to_email} (subject: {subject!r}) [HTTP {status}]")
+                return True
+            body = resp.read().decode()
+            logger.error(f"SendGrid returned HTTP {status} for {to_email}: {body}")
+            return False
+    except urllib.error.HTTPError as e:
+        body = e.read().decode() if e.fp else ""
+        logger.error(
+            f"SendGrid HTTP {e.code} for {to_email}: {body}",
+            exc_info=True,
+        )
+        return False
+    except Exception as e:
+        logger.error(f"Failed to send email to {to_email}: {e}", exc_info=True)
+        return False
 
 
 def send_otp_email(to_email, otp_code):

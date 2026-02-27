@@ -13,7 +13,7 @@ class User(db.Model):
     email = db.Column(db.String(255), unique=True, nullable=True)
     phone = db.Column(db.String(20), unique=True, nullable=True)
     password_hash = db.Column(db.String(255), nullable=True)
-    auth_provider = db.Column(db.Enum('email', 'phone', 'google', name='auth_provider_enum'), nullable=False)
+    auth_provider = db.Column(db.Enum('phone', 'google', name='auth_provider_enum'), nullable=False)
     profile_image_url = db.Column(db.String(500), nullable=True)
     is_active = db.Column(db.Boolean, default=True)
     is_verified = db.Column(db.Boolean, default=False)

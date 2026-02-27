@@ -5,13 +5,12 @@ from app.models.user import User
 from app.models.settings import UserSettings
 from app.models.trusted_contact import TrustedContact
 from app.models.revoked_token import RevokedToken
-from app.services.email_service import send_otp_email
 from app.utils.validators import validate_password
 from app.utils.otp import generate_otp, store_otp, verify_otp
 from app.schemas.auth_schema import (
-    EmailRegisterSchema, EmailLoginSchema,
-    RefreshTokenSchema, ResendEmailOtpSchema,
-    ForgotPasswordSchema, GoogleLoginSchema, VerifyEmailOTPSchema
+    PhoneRegisterSchema, PhoneLoginSchema,
+    RefreshTokenSchema, ResendOTPSchema,
+    ForgotPasswordSchema, GoogleLoginSchema, VerifyPhoneOTPSchema
 )
 from flask_jwt_extended import (
     create_access_token, create_refresh_token, jwt_required,
@@ -28,6 +27,51 @@ auth_bp = Blueprint('auth', __name__)
 # ------------------------------------------------------------------ #
 # Helpers                                                             #
 # ------------------------------------------------------------------ #
+
+# Expanded emergency numbers list
+EMERGENCY_NUMBERS = {
+    "India": "112",
+    "United States": "911",
+    "United Kingdom": "999",
+    "Australia": "000",
+    "Canada": "911",
+    "China": "110",
+    "Japan": "119",
+    "Brazil": "190",
+    "South Africa": "10111",
+    "France": "112",
+    "Germany": "112",
+    "Mexico": "911",
+    "United Arab Emirates": "999",
+    "South Korea": "112",
+    "Russia": "112",
+    "USA": "911",
+    "UK": "999",
+    "Spain": "112",
+    "Italy": "112",
+    "Singapore": "995",
+    "New Zealand": "111",
+    "Israel": "100",
+    "Pakistan": "15",
+    "Nigeria": "112",
+    "Argentina": "911",
+    "Switzerland": "112",
+    "Netherlands": "112",
+    "Sweden": "112",
+    "Norway": "112",
+    "Greece": "112",
+    "Ireland": "112",
+    "Portugal": "112",
+    "Turkey": "112",
+    "Saudi Arabia": "999",
+    "Egypt": "122",
+    "Indonesia": "112",
+    "Thailand": "191",
+    "Malaysia": "999",
+    "Philippines": "911",
+    "Vietnam": "113",
+}
+
 
 def _make_tokens(user_id: str):
     """Return (access_token, refresh_token, sos_token, expires_in).
@@ -57,117 +101,105 @@ def _extract_bearer(request_obj) -> str | None:
     return None
 
 
-@auth_bp.route('/register/email', methods=['POST'])
-def register_email():
-    schema = EmailRegisterSchema()
+# ------------------------------------------------------------------ #
+# Registration & Verification (phone-based, OTP sent by Android app) #
+# ------------------------------------------------------------------ #
+
+@auth_bp.route('/register/phone', methods=['POST'])
+def register_phone():
+    """Register a new user with phone number.
+
+    The backend generates an OTP and returns it in the response.
+    The Android app is responsible for sending this OTP to the user's
+    phone via the built-in SmsManager (no server-side SMS cost).
+    """
+    schema = PhoneRegisterSchema()
     try:
         data = schema.load(request.json)
     except ValidationError as err:
-        return jsonify(success=False, error={"code": "VALIDATION_ERROR", "message": "Invalid request", "details": err.messages}), 400
+        return jsonify(success=False, error={
+            "code": "VALIDATION_ERROR",
+            "message": "Invalid request",
+            "details": err.messages
+        }), 400
 
-    if User.query.filter_by(email=data['email']).first():
-        return jsonify(success=False, error={"code": "CONFLICT", "message": "Email already exists"}), 409
+    if User.query.filter_by(phone=data['phone_number']).first():
+        return jsonify(success=False, error={
+            "code": "CONFLICT",
+            "message": "Phone number already registered"
+        }), 409
 
     if not validate_password(data['password']):
-        return jsonify(success=False, error={"code": "VALIDATION_ERROR", "message": "Password weak"}), 400
+        return jsonify(success=False, error={
+            "code": "VALIDATION_ERROR",
+            "message": "Password weak"
+        }), 400
 
-    hashed_pw = bcrypt.hashpw(data['password'].encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+    hashed_pw = bcrypt.hashpw(
+        data['password'].encode('utf-8'), bcrypt.gensalt()
+    ).decode('utf-8')
 
-    # Basic mapping, can be expanded or moved to a utility/constants file
-    # Expanded emergency numbers list
-    emergency_numbers = {
-        "India": "112",
-        "United States": "911",
-        "United Kingdom": "999",
-        "Australia": "000",
-        "Canada": "911",
-        "China": "110",
-        "Japan": "119",
-        "Brazil": "190",
-        "South Africa": "10111",
-        "France": "112",
-        "Germany": "112",
-        "Mexico": "911",
-        "United Arab Emirates": "999",
-        "South Korea": "112",
-        "Russia": "112",
-        "USA": "911", # Keeping common alias
-        "UK": "999",   # Keeping common alias
-        "Spain": "112",
-        "Italy": "112",
-        "Singapore": "995",
-        "New Zealand": "111",
-        "Israel": "100",
-        "Pakistan": "15",
-        "Nigeria": "112",
-        "Argentina": "911",
-        "Switzerland": "112",
-        "Netherlands": "112",
-        "Sweden": "112",
-        "Norway": "112",
-        "Greece": "112",
-        "Ireland": "112",
-        "Portugal": "112",
-        "Turkey": "112",
-        "Saudi Arabia": "999",
-        "Egypt": "122",
-        "Indonesia": "112",
-        "Thailand": "191",
-        "Malaysia": "999",
-        "Philippines": "911",
-        "Vietnam": "113",
-    }
-    emergency_number = emergency_numbers.get(data.get('country', ''), "112") # Default to 112
+    emergency_number = EMERGENCY_NUMBERS.get(data.get('country', ''), "112")
 
     new_user = User(
         full_name=data['full_name'],
-        email=data['email'],
+        phone=data['phone_number'],
         country=data['country'],
         password_hash=hashed_pw,
-        auth_provider='email',
+        auth_provider='phone',
         is_verified=False
     )
     db.session.add(new_user)
-    db.session.flush() # Get ID
+    db.session.flush()
 
     # Create default settings
-    default_settings = UserSettings(user_id=new_user.id, emergency_number=emergency_number)
+    default_settings = UserSettings(
+        user_id=new_user.id, emergency_number=emergency_number
+    )
     db.session.add(default_settings)
-    
-    # Generate and Send OTP
+
+    # Generate OTP — returned to the app so the device can SMS it
     otp_code = generate_otp(length=6)
-    store_otp(email=new_user.email, otp_code=otp_code, purpose='email_verification')
-    
-    email_sent = send_otp_email(new_user.email, otp_code)
-    
-    if not email_sent:
-        # Should we rollback? For now log and continue, user can resend
-        print(f"Failed to send OTP to {new_user.email}")
-        
+    store_otp(phone=new_user.phone, otp_code=otp_code, purpose='phone_verification')
+
     db.session.commit()
 
-    return jsonify(success=True, message="Registration successful. OTP sent to email.", data={
-        "email": new_user.email
+    return jsonify(success=True, message="Registration successful. OTP generated.", data={
+        "phone_number": new_user.phone,
+        "otp_code": otp_code,
+        "expires_in": int(current_app.config.get('OTP_EXPIRY_SECONDS', 300))
     }), 201
 
-@auth_bp.route('/verify-email-otp', methods=['POST'])
-def verify_email_otp():
-    schema = VerifyEmailOTPSchema()
+
+@auth_bp.route('/verify-phone-otp', methods=['POST'])
+def verify_phone_otp():
+    """Verify the OTP sent to the user's phone number."""
+    schema = VerifyPhoneOTPSchema()
     try:
         data = schema.load(request.json)
     except ValidationError as err:
-        return jsonify(success=False, error={"code": "VALIDATION_ERROR", "message": "Invalid request", "details": err.messages}), 400
+        return jsonify(success=False, error={
+            "code": "VALIDATION_ERROR",
+            "message": "Invalid request",
+            "details": err.messages
+        }), 400
 
-    email = data['email']
+    phone = data['phone_number']
     otp_code = data['otp_code']
 
-    valid, msg = verify_otp(email=email, otp_code=otp_code, purpose='email_verification')
+    valid, msg = verify_otp(phone=phone, otp_code=otp_code, purpose='phone_verification')
     if not valid:
-        return jsonify(success=False, error={"code": "OTP_INVALID", "message": msg}), 422
+        return jsonify(success=False, error={
+            "code": "OTP_INVALID",
+            "message": msg
+        }), 422
 
-    user = User.query.filter_by(email=email).first()
+    user = User.query.filter_by(phone=phone).first()
     if not user:
-        return jsonify(success=False, error={"code": "NOT_FOUND", "message": "User not found"}), 404
+        return jsonify(success=False, error={
+            "code": "NOT_FOUND",
+            "message": "User not found"
+        }), 404
 
     user.is_verified = True
     db.session.commit()
@@ -177,39 +209,60 @@ def verify_email_otp():
     return jsonify(success=True, data={
         "user_id": user.id,
         "full_name": user.full_name,
-        "email": user.email,
+        "phone_number": user.phone,
         "access_token": access_token,
         "refresh_token": refresh_token,
         "sos_token": sos_token,
         "expires_in": expires_in
-    }, message="Email verified successfully"), 200
+    }, message="Phone verified successfully"), 200
 
-@auth_bp.route('/login/email', methods=['POST'])
-@limiter.limit("5/15minutes") 
-def login_email():
-    schema = EmailLoginSchema()
+
+# ------------------------------------------------------------------ #
+# Login                                                               #
+# ------------------------------------------------------------------ #
+
+@auth_bp.route('/login/phone', methods=['POST'])
+@limiter.limit("5/15minutes")
+def login_phone():
+    schema = PhoneLoginSchema()
     try:
         data = schema.load(request.json)
     except ValidationError as err:
-        return jsonify(success=False, error={"code": "VALIDATION_ERROR", "message": "Invalid request", "details": err.messages}), 400
+        return jsonify(success=False, error={
+            "code": "VALIDATION_ERROR",
+            "message": "Invalid request",
+            "details": err.messages
+        }), 400
 
-    user = User.query.filter_by(email=data['email']).first()
-    
+    user = User.query.filter_by(phone=data['phone_number']).first()
+
     if not user or not user.password_hash:
-        return jsonify(success=False, error={"code": "UNAUTHORIZED", "message": "Invalid credentials"}), 401
+        return jsonify(success=False, error={
+            "code": "UNAUTHORIZED",
+            "message": "Invalid credentials"
+        }), 401
 
-    if not bcrypt.checkpw(data['password'].encode('utf-8'), user.password_hash.encode('utf-8')):
-        return jsonify(success=False, error={"code": "UNAUTHORIZED", "message": "Invalid credentials"}), 401
+    if not bcrypt.checkpw(
+        data['password'].encode('utf-8'),
+        user.password_hash.encode('utf-8')
+    ):
+        return jsonify(success=False, error={
+            "code": "UNAUTHORIZED",
+            "message": "Invalid credentials"
+        }), 401
 
     if not user.is_verified:
-        return jsonify(success=False, error={"code": "EMAIL_NOT_VERIFIED", "message": "Please verify your email before logging in."}), 403
+        return jsonify(success=False, error={
+            "code": "PHONE_NOT_VERIFIED",
+            "message": "Please verify your phone number before logging in."
+        }), 403
 
     access_token, refresh_token, sos_token, expires_in = _make_tokens(user.id)
 
     return jsonify(success=True, data={
         "user_id": user.id,
         "full_name": user.full_name,
-        "email": user.email,
+        "phone_number": user.phone,
         "access_token": access_token,
         "refresh_token": refresh_token,
         "sos_token": sos_token,
@@ -217,6 +270,9 @@ def login_email():
     }), 200
 
 
+# ------------------------------------------------------------------ #
+# Token management                                                    #
+# ------------------------------------------------------------------ #
 
 @auth_bp.route('/refresh', methods=['POST'])
 def refresh():
@@ -304,7 +360,6 @@ def logout():
                 db.session.add(RevokedToken(jti=jti, token_type='refresh'))
                 db.session.commit()
         except JWTDecodeError:
-            # Malformed / already-expired refresh token — just proceed with logout
             pass
 
     return jsonify(success=True, message="Logged out successfully"), 200
@@ -315,53 +370,90 @@ def validate_token():
     current_user_id = get_jwt_identity()
     return jsonify(success=True, data={"user_id": current_user_id, "is_valid": True}), 200
 
+
+# ------------------------------------------------------------------ #
+# OTP helpers (resend / forgot password)                              #
+# ------------------------------------------------------------------ #
+
 @auth_bp.route('/resend-otp', methods=['POST'])
 @limiter.limit("3/15minutes")
 def resend_otp():
-    schema = ResendEmailOtpSchema()
+    """Resend a verification OTP for an unverified phone number.
+
+    Returns the OTP in the response so the Android app can send it via SMS.
+    """
+    schema = ResendOTPSchema()
     try:
         data = schema.load(request.json)
     except ValidationError as err:
-        return jsonify(success=False, error={"code": "VALIDATION_ERROR", "message": "Invalid request", "details": err.messages}), 400
+        return jsonify(success=False, error={
+            "code": "VALIDATION_ERROR",
+            "message": "Invalid request",
+            "details": err.messages
+        }), 400
 
-    email = data['email']
+    phone = data['phone_number']
 
-    user = User.query.filter_by(email=email).first()
+    user = User.query.filter_by(phone=phone).first()
     if not user:
-        # Return success to prevent user enumeration
-        return jsonify(success=True, message="If the email is registered, a new OTP has been sent.", data={"expires_in": 300}), 200
+        # Don't reveal whether the number is registered
+        return jsonify(success=True, message="If the number is registered, a new OTP has been generated.", data={
+            "expires_in": int(current_app.config.get('OTP_EXPIRY_SECONDS', 300))
+        }), 200
 
     if user.is_verified:
-        return jsonify(success=False, error={"code": "ALREADY_VERIFIED", "message": "Email is already verified."}), 400
+        return jsonify(success=False, error={
+            "code": "ALREADY_VERIFIED",
+            "message": "Phone number is already verified."
+        }), 400
 
     otp_code = generate_otp(length=6)
-    store_otp(email=email, otp_code=otp_code, purpose='email_verification')
+    store_otp(phone=phone, otp_code=otp_code, purpose='phone_verification')
 
-    email_sent = send_otp_email(email, otp_code)
-    if not email_sent:
-        return jsonify(success=False, error={"code": "EMAIL_FAILED", "message": "Failed to send OTP email. Please try again."}), 500
+    return jsonify(success=True, message="OTP generated successfully.", data={
+        "otp_code": otp_code,
+        "expires_in": int(current_app.config.get('OTP_EXPIRY_SECONDS', 300))
+    }), 200
 
-    return jsonify(success=True, message="OTP resent successfully.", data={"expires_in": 300}), 200
 
 @auth_bp.route('/forgot-password', methods=['POST'])
 @limiter.limit("3/15minutes")
 def forgot_password():
+    """Generate a password-reset OTP for the given phone number.
+
+    Returns the OTP so the Android app can send it to the user via SMS.
+    """
     schema = ForgotPasswordSchema()
     try:
         data = schema.load(request.json)
     except ValidationError as err:
-        return jsonify(success=False, error={"code": "VALIDATION_ERROR", "message": "Invalid request", "details": err.messages}), 400
+        return jsonify(success=False, error={
+            "code": "VALIDATION_ERROR",
+            "message": "Invalid request",
+            "details": err.messages
+        }), 400
 
-    email = data['email']
-    user = User.query.filter_by(email=email).first()
-    
-    # Always return success to prevent user enumeration
-    if user:
-        # Generate token/link and send email
-        # Mocking email sending for now
-        print(f"--- PASSWORD RESET LINK SENT TO {email} ---")
-    
-    return jsonify(success=True, message="If an account exists, a reset link has been sent."), 200
+    phone = data['phone_number']
+    user = User.query.filter_by(phone=phone).first()
+
+    if not user:
+        # Don't reveal whether the number is registered
+        return jsonify(success=True, message="If an account exists, a reset OTP has been generated.", data={
+            "expires_in": int(current_app.config.get('OTP_EXPIRY_SECONDS', 300))
+        }), 200
+
+    otp_code = generate_otp(length=6)
+    store_otp(phone=phone, otp_code=otp_code, purpose='reset_password')
+
+    return jsonify(success=True, message="Password reset OTP generated.", data={
+        "otp_code": otp_code,
+        "expires_in": int(current_app.config.get('OTP_EXPIRY_SECONDS', 300))
+    }), 200
+
+
+# ------------------------------------------------------------------ #
+# Google OAuth (kept for future use — still mocked)                   #
+# ------------------------------------------------------------------ #
 
 @auth_bp.route('/google', methods=['POST'])
 def google_auth():
@@ -369,23 +461,21 @@ def google_auth():
     try:
         data = schema.load(request.json)
     except ValidationError as err:
-        return jsonify(success=False, error={"code": "VALIDATION_ERROR", "message": "Invalid request", "details": err.messages}), 400
+        return jsonify(success=False, error={
+            "code": "VALIDATION_ERROR",
+            "message": "Invalid request",
+            "details": err.messages
+        }), 400
 
     id_token = data['id_token']
-    
-    # Verify ID token with Google (Mock for now)
-    # In production:
-    # from google.oauth2 import id_token as google_id_token
-    # from google.auth.transport import requests
-    # id_info = google_id_token.verify_oauth2_token(id_token, requests.Request(), GOOGLE_CLIENT_ID)
-    
-    # Mocking successful verification
+
+    # TODO: Replace with real Google token verification
     email = "mock_google_user@gmail.com"
     full_name = "Google User"
-    
+
     user = User.query.filter_by(email=email).first()
     is_new = False
-    
+
     if not user:
         is_new = True
         user = User(
@@ -396,7 +486,7 @@ def google_auth():
         )
         db.session.add(user)
         db.session.flush()
-        
+
         db.session.add(UserSettings(user_id=user.id))
         db.session.commit()
 

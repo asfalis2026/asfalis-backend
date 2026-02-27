@@ -8,9 +8,8 @@ class OTPRecord(db.Model):
 
     id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     phone = db.Column(db.String(20), nullable=True)
-    email = db.Column(db.String(255), nullable=True)
-    otp_code = db.Column(db.String(6), nullable=False) # Hashed in production usually, keeping simple for now or hashed
-    purpose = db.Column(db.Enum('login', 'verify', 'reset_password', 'email_verification', name='otp_purpose_enum'), nullable=False)
+    otp_code = db.Column(db.String(6), nullable=False)
+    purpose = db.Column(db.Enum('login', 'verify', 'reset_password', 'phone_verification', name='otp_purpose_enum'), nullable=False)
     attempts = db.Column(db.Integer, default=0)
     is_used = db.Column(db.Boolean, default=False)
     expires_at = db.Column(db.DateTime, nullable=False)

@@ -36,7 +36,6 @@ def get_profile():
         "email": user.email,
         "country": user.country,
         "phone": user.phone,
-        "phone": user.phone,
         "sos_message": user.sos_message,
         "profile_image_url": user.profile_image_url,
         "emergency_contact": user.settings.emergency_number if user.settings else None,

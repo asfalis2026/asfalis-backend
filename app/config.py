@@ -17,11 +17,6 @@ class Config:
     OTP_EXPIRY_SECONDS = int(os.environ.get('OTP_EXPIRY_SECONDS', 300))
     MAX_OTP_ATTEMPTS = int(os.environ.get('MAX_OTP_ATTEMPTS', 5))
     
-    # SendGrid HTTP API — only the API key and sender address are needed.
-    # MAIL_PASSWORD holds the SendGrid API key (SG.xxxx).
-    MAIL_PASSWORD = os.environ.get('MAIL_PASSWORD')   # SendGrid API key
-    MAIL_SENDER = os.environ.get('MAIL_SENDER')       # From address shown to recipients
-    
     TWILIO_ACCOUNT_SID = os.environ.get('TWILIO_ACCOUNT_SID')
     TWILIO_AUTH_TOKEN = os.environ.get('TWILIO_AUTH_TOKEN')
     TWILIO_PHONE_NUMBER = os.environ.get('TWILIO_PHONE_NUMBER')

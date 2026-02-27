@@ -6,7 +6,6 @@ from app.extensions import db, limiter
 from app.schemas.contact_schema import ContactSchema
 from marshmallow import ValidationError
 from app.config import Config
-from app.services.email_service import send_contact_added_email
 from app.models.user import User
 
 contacts_bp = Blueprint('contacts', __name__)
@@ -51,19 +50,30 @@ def add_contact():
     db.session.add(new_contact)
     db.session.commit()
 
-    # Send notification email if email is provided
-    if new_contact.email:
-        user = User.query.get(current_user_id)
-        if user:
-            send_contact_added_email(
-                to_email=new_contact.email,
-                contact_name=new_contact.name,
-                user_name=user.full_name,
-                twilio_number=Config.TWILIO_PHONE_NUMBER,
-                sandbox_code=Config.TWILIO_SANDBOX_CODE
-            )
+    # Build WhatsApp join info so the Android app can send an invite
+    # via native SMS / share intent (no server-side email needed).
+    whatsapp_join_info = None
+    twilio_number = Config.TWILIO_PHONE_NUMBER
+    sandbox_code = Config.TWILIO_SANDBOX_CODE
+    if twilio_number and sandbox_code:
+        clean_number = twilio_number.replace('+', '').replace('-', '').replace(' ', '')
+        encoded_code = sandbox_code.replace(' ', '%20')
+        whatsapp_join_info = {
+            "twilio_number": twilio_number,
+            "sandbox_code": sandbox_code,
+            "whatsapp_link": f"https://wa.me/{clean_number}?text={encoded_code}"
+        }
 
-    return jsonify(success=True, data=new_contact.to_dict()), 201
+    user = User.query.get(current_user_id)
+    response_data = new_contact.to_dict()
+    response_data["whatsapp_join_info"] = whatsapp_join_info
+    response_data["invite_message"] = (
+        f"{user.full_name if user else 'Someone'} added you as a trusted contact "
+        f"in Asfalis, a personal safety app. You will receive emergency alerts "
+        f"with their location if they trigger an SOS."
+    )
+
+    return jsonify(success=True, data=response_data), 201
 
 @contacts_bp.route('/<contact_id>', methods=['PUT'])
 @jwt_required()

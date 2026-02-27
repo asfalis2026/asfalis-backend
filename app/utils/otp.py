@@ -10,28 +10,18 @@ def generate_otp(length=6):
     """Generate a numeric OTP of given length."""
     return ''.join(random.choices(string.digits, k=length))
 
-def store_otp(phone=None, email=None, otp_code=None, purpose=None):
-    """Store OTP in database."""
-    if not phone and not email:
-        raise ValueError("Either phone or email must be provided")
+def store_otp(phone=None, otp_code=None, purpose=None):
+    """Store OTP in database (phone-based only)."""
+    if not phone:
+        raise ValueError("Phone number must be provided")
 
-    # Invalidate existing OTPs
-    query_filter = {
-        'purpose': purpose,
-        'is_used': False
-    }
-    if phone:
-        query_filter['phone'] = phone
-    if email:
-        query_filter['email'] = email
-        
-    OTPRecord.query.filter_by(**query_filter).update({'is_used': True})
-    
+    # Invalidate existing OTPs for this phone + purpose
+    OTPRecord.query.filter_by(phone=phone, purpose=purpose, is_used=False).update({'is_used': True})
+
     expires_at = datetime.utcnow() + timedelta(seconds=int(Config.OTP_EXPIRY_SECONDS or 300))
-    
+
     otp_record = OTPRecord(
         phone=phone,
-        email=email,
         otp_code=otp_code,
         purpose=purpose,
         expires_at=expires_at
@@ -40,21 +30,14 @@ def store_otp(phone=None, email=None, otp_code=None, purpose=None):
     db.session.commit()
     return otp_record
 
-def verify_otp(phone=None, email=None, otp_code=None, purpose=None):
-    """Verify OTP."""
-    if not phone and not email:
-        return False, "Identifier required"
+def verify_otp(phone=None, otp_code=None, purpose=None):
+    """Verify OTP (phone-based only)."""
+    if not phone:
+        return False, "Phone number required"
 
-    query_filter = {
-        'purpose': purpose,
-        'is_used': False
-    }
-    if phone:
-        query_filter['phone'] = phone
-    if email:
-        query_filter['email'] = email
-
-    otp_record = OTPRecord.query.filter_by(**query_filter).order_by(OTPRecord.created_at.desc()).first()
+    otp_record = OTPRecord.query.filter_by(
+        phone=phone, purpose=purpose, is_used=False
+    ).order_by(OTPRecord.created_at.desc()).first()
 
     if not otp_record:
         return False, "OTP not found or expired"

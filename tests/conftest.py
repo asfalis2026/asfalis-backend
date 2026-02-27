@@ -37,39 +37,25 @@ def runner(app):
 def auth_header(client):
     """Register and login a user, returning the auth header."""
     # Register
-    client.post('/api/auth/register/email', json={
-        "email": "auth_test@example.com",
+    client.post('/api/auth/register/phone', json={
+        "phone_number": "+919876543210",
         "password": "password123",
         "full_name": "Auth User",
         "country": "India"
     })
     
-    # Login (skipping verify for now as verify endpoint requires OTP which we can't easily get without mocking)
-    # Be careful: In real app, user might need to be verified to login. 
-    # Let's check auth.py: login checks `if not user`. It doesn't seem to enforce `is_verified` for login? 
-    # Wait, `verify-email-otp` sets `is_verified=True`. 
-    # If login doesn't check `is_verified`, we are good. 
-    # Let's assume for test simplicity we can login immediately or we check if we need verify.
-    # Looking at auth.py line 160-166, it checks password but not is_verified.
-    
-    resp = client.post('/api/auth/login/email', json={
-        "email": "auth_test@example.com",
+    # Manually verify the user in DB (OTP verification is handled by Android app)
+    from app.models.user import User
+    from app.extensions import db
+    user = User.query.filter_by(phone="+919876543210").first()
+    if user:
+        user.is_verified = True
+        db.session.commit()
+
+    resp = client.post('/api/auth/login/phone', json={
+        "phone_number": "+919876543210",
         "password": "password123"
     })
-    
-    if resp.status_code != 200:
-        # Fallback if verify is needed: Manually verify in DB
-        from app.models.user import User
-        from app.extensions import db
-        user = User.query.filter_by(email="auth_test@example.com").first()
-        if user:
-            user.is_verified = True
-            db.session.commit()
-        # Try login again
-        resp = client.post('/api/auth/login/email', json={
-            "email": "auth_test@example.com",
-            "password": "password123"
-        })
         
     data = json.loads(resp.data)
     token = data['data']['access_token']

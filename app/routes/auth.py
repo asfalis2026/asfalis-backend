@@ -158,12 +158,20 @@ def register_phone():
 
     db.session.commit()
 
-    send_otp_sms(new_user.phone, otp_code)
+    sms_status = send_otp_sms(new_user.phone, otp_code)
 
-    return jsonify(status="success", message="OTP sent to your phone via SMS", data={
+    resp_data = {
         "phone_number": new_user.phone,
-        "expires_in": int(current_app.config.get('OTP_EXPIRY_SECONDS', 300))
-    }), 201
+        "expires_in": int(current_app.config.get('OTP_EXPIRY_SECONDS', 300)),
+        "sms_status": sms_status,
+    }
+    # In development mode expose the OTP so testing is possible without
+    # a working Twilio account.
+    if current_app.debug:
+        resp_data["otp_code"] = otp_code
+
+    return jsonify(status="success", message="OTP sent to your phone via SMS",
+                   data=resp_data), 201
 
 
 @auth_bp.route('/verify-phone-otp', methods=['POST'])
@@ -376,11 +384,17 @@ def resend_otp():
 
     otp_code = generate_otp(length=6)
     store_otp(phone=phone, otp_code=otp_code, purpose='phone_verification')
-    send_otp_sms(phone, otp_code)
+    sms_status = send_otp_sms(phone, otp_code)
 
-    return jsonify(status="success", message="OTP resent via SMS", data={
-        "expires_in": int(current_app.config.get('OTP_EXPIRY_SECONDS', 300))
-    }), 200
+    resp_data = {
+        "expires_in": int(current_app.config.get('OTP_EXPIRY_SECONDS', 300)),
+        "sms_status": sms_status,
+    }
+    if current_app.debug:
+        resp_data["otp_code"] = otp_code
+
+    return jsonify(status="success", message="OTP resent via SMS",
+                   data=resp_data), 200
 
 
 @auth_bp.route('/forgot-password', methods=['POST'])
@@ -409,11 +423,17 @@ def forgot_password():
 
     otp_code = generate_otp(length=6)
     store_otp(phone=phone, otp_code=otp_code, purpose='reset_password')
-    send_otp_sms(phone, otp_code)
+    sms_status = send_otp_sms(phone, otp_code)
 
-    return jsonify(status="success", message="Password reset OTP sent via SMS", data={
-        "expires_in": int(current_app.config.get('OTP_EXPIRY_SECONDS', 300))
-    }), 200
+    resp_data = {
+        "expires_in": int(current_app.config.get('OTP_EXPIRY_SECONDS', 300)),
+        "sms_status": sms_status,
+    }
+    if current_app.debug:
+        resp_data["otp_code"] = otp_code
+
+    return jsonify(status="success", message="Password reset OTP sent via SMS",
+                   data=resp_data), 200
 
 
 @auth_bp.route('/reset-password', methods=['POST'])

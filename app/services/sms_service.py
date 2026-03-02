@@ -7,38 +7,17 @@ import threading
 logger = logging.getLogger(__name__)
 
 
-def _get_twilio_client():
-    """Get a Twilio client using current app config."""
-    account_sid = current_app.config.get('TWILIO_ACCOUNT_SID')
-    auth_token = current_app.config.get('TWILIO_AUTH_TOKEN')
-    if not account_sid or not auth_token:
-        return None, None, None
-    return Client(account_sid, auth_token), account_sid, auth_token
-
-
-def _send_sms_direct(to, body, from_):
-    """Send SMS directly via Twilio using background threads."""
-    try:
-        account_sid = current_app.config.get('TWILIO_ACCOUNT_SID')
-        auth_token = current_app.config.get('TWILIO_AUTH_TOKEN')
-        twilio_phone = current_app.config.get('TWILIO_PHONE_NUMBER')
-
-        if not all([account_sid, auth_token, twilio_phone]):
-            logger.warning("Twilio credentials not configured, skipping SMS.")
-            return
-
-        client = Client(account_sid, auth_token)
-        message = client.messages.create(body=body, from_=from_ or twilio_phone, to=to)
-        logger.info(f"SMS sent to {to}: {message.sid}")
-    except Exception as e:
-        logger.error(f"Failed to send SMS to {to}: {e}")
-
-
 def send_sms(to, body):
     """
     Send an SMS message via Twilio.
-    Sends in a background thread to avoid blocking the request,
-    without requiring external task queues.
+
+    When Twilio credentials are present the message is dispatched in a
+    background thread so the HTTP response is not blocked.
+
+    Returns one of:
+        "mock-sid"   – credentials not configured (dev/test mode)
+        "dispatched" – Twilio send started in background thread
+        None         – unexpected error before dispatch
     """
     try:
         account_sid = current_app.config.get('TWILIO_ACCOUNT_SID')
@@ -46,21 +25,26 @@ def send_sms(to, body):
         twilio_phone = current_app.config.get('TWILIO_PHONE_NUMBER')
 
         if not all([account_sid, auth_token, twilio_phone]):
-            logger.warning("Twilio client not configured. Check env vars.")
-            print(f"--- MOCK SMS TO {to}: {body}")
+            logger.warning("Twilio client not configured. Check TWILIO_* env vars.")
+            logger.info(f"[MOCK SMS] To={to} | Body={body}")
             return "mock-sid"
 
-        # Use a thread so we don't block the HTTP response
+        # Capture app reference while still inside the request context
         app = current_app._get_current_object()
 
         def _send():
             with app.app_context():
                 try:
                     client = Client(account_sid, auth_token)
-                    message = client.messages.create(body=body, from_=twilio_phone, to=to)
-                    logger.info(f"SMS sent to {to}: {message.sid}")
+                    message = client.messages.create(
+                        body=body, from_=twilio_phone, to=to
+                    )
+                    logger.info(f"SMS sent to {to}: SID={message.sid}")
                 except Exception as e:
-                    logger.error(f"Failed to send SMS to {to}: {e}")
+                    logger.error(f"Twilio failed to send SMS to {to}: {e}")
+                    # Log the OTP body so developers can retrieve it from server
+                    # logs when Twilio cannot deliver (e.g. trial account limits).
+                    logger.warning(f"[DEV FALLBACK] SMS body for {to}: {body}")
 
         t = threading.Thread(target=_send, daemon=True)
         t.start()
@@ -73,8 +57,11 @@ def send_sms(to, body):
 
 
 def send_otp_sms(phone, otp_code):
-    """Send OTP for phone authentication."""
-    body = f"Your Asfalis verification code is: {otp_code}. Valid for 5 minutes. Do not share."
+    """Send OTP for phone authentication. Returns the send status string."""
+    body = (
+        f"Your Asfalis verification code is: {otp_code}. "
+        f"Valid for 5 minutes. Do not share."
+    )
     return send_sms(phone, body)
 
 

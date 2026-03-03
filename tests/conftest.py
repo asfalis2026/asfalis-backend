@@ -14,6 +14,7 @@ class TestConfig(Config):
     WTF_CSRF_ENABLED = False
     CELERY = {'task_always_eager': True} # Use eager mode for tests
     MAIL_SUPPRESS_SEND = True
+    SOS_COOLDOWN_SECONDS = 0
 
 @pytest.fixture
 def app():

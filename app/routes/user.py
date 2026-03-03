@@ -12,45 +12,60 @@ logger = logging.getLogger(__name__)
 
 user_bp = Blueprint('user', __name__)
 
+
+@user_bp.route('/security-policy', methods=['GET'])
+@jwt_required()
+def get_security_policy():
+    """Return backend-defined client security policy for sensitive screens."""
+    return jsonify(success=True, data={
+        "screenshot_protection": {
+            "enabled": True,
+            "protected_screens": [
+                "trusted_contacts",
+                "sos_history"
+            ]
+        }
+    }), 200
+
 @user_bp.route('/profile', methods=['GET'])
 @jwt_required()
 def get_profile():
     current_user_id = get_jwt_identity()
-    user = User.query.get(current_user_id)
-    
+    user = db.session.get(User, current_user_id)
+
     if not user:
         return jsonify(success=False, error={"code": "NOT_FOUND", "message": "User not found"}), 404
 
-    # Calculate member since string
-    member_since = user.created_at.strftime('%B %Y')
-    
-    # Check protection status (mock/placeholder logic)
-    is_protection_active = True 
+    try:
+        member_since = user.created_at.strftime('%B %Y')
+        is_protection_active = True
+        contacts = TrustedContact.query.filter_by(user_id=current_user_id).all()
 
-    # Get trusted/emergency contacts
-    contacts = TrustedContact.query.filter_by(user_id=current_user_id).all()
-
-    return jsonify(success=True, data={
-        "user_id": user.id,
-        "full_name": user.full_name,
-        "email": user.email,
-        "country": user.country,
-        "phone": user.phone,
-        "sos_message": user.sos_message,
-        "profile_image_url": user.profile_image_url,
-        "emergency_contact": user.settings.emergency_number if user.settings else None,
-        "trusted_contacts": [c.to_dict() for c in contacts],
-        "trusted_contacts_count": len(contacts),
-        "member_since": member_since,
-        "is_protection_active": is_protection_active,
-        "auth_provider": user.auth_provider
-    }), 200
+        return jsonify(success=True, data={
+            "user_id": user.id,
+            "full_name": user.full_name,
+            "email": user.email,
+            "country": user.country,
+            "phone": user.phone,
+            "sos_message": user.sos_message,
+            "profile_image_url": user.profile_image_url,
+            "emergency_contact": user.settings.emergency_number if user.settings else None,
+            "trusted_contacts": [c.to_dict() for c in contacts],
+            "trusted_contacts_count": len(contacts),
+            "member_since": member_since,
+            "is_protection_active": is_protection_active,
+            "auth_provider": user.auth_provider
+        }), 200
+    except Exception as e:
+        logger.error(f"Profile fetch failed for user {current_user_id}: {e}")
+        db.session.rollback()
+        return jsonify(success=False, error={"code": "INTERNAL_ERROR", "message": "Failed to fetch profile"}), 500
 
 @user_bp.route('/profile', methods=['PUT'])
 @jwt_required()
 def update_profile():
     current_user_id = get_jwt_identity()
-    user = User.query.get(current_user_id)
+    user = db.session.get(User, current_user_id)
 
     if not user:
         return jsonify(success=False, error={"code": "NOT_FOUND", "message": "User not found"}), 404
@@ -87,7 +102,7 @@ def update_profile():
 @jwt_required()
 def update_fcm_token():
     current_user_id = get_jwt_identity()
-    user = User.query.get(current_user_id)
+    user = db.session.get(User, current_user_id)
 
     if not user:
         return jsonify(success=False, error={"code": "NOT_FOUND", "message": "User not found"}), 404
@@ -108,7 +123,7 @@ def update_fcm_token():
 def update_sos_message():
     """Update user's SOS emergency message"""
     current_user_id = get_jwt_identity()
-    user = User.query.get(current_user_id)
+    user = db.session.get(User, current_user_id)
 
     if not user:
         return jsonify(success=False, error={"code": "NOT_FOUND", "message": "User not found"}), 404
@@ -140,7 +155,7 @@ def update_sos_message():
 @jwt_required()
 def delete_account():
     current_user_id = get_jwt_identity()
-    user = User.query.get(current_user_id)
+    user = db.session.get(User, current_user_id)
 
     if not user:
         return jsonify(success=False, error={"code": "NOT_FOUND", "message": "User not found"}), 404

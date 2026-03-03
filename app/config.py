@@ -32,3 +32,4 @@ class Config:
     FIREBASE_CREDENTIALS_JSON = os.environ.get('FIREBASE_CREDENTIALS_JSON')
     
     MAX_TRUSTED_CONTACTS = int(os.environ.get('MAX_TRUSTED_CONTACTS', 5))
+    SOS_COOLDOWN_SECONDS = int(os.environ.get('SOS_COOLDOWN_SECONDS', 20))

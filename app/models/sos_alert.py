@@ -18,6 +18,7 @@ class SOSAlert(db.Model):
     triggered_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
     sent_at = db.Column(db.DateTime, nullable=True)
     resolved_at = db.Column(db.DateTime, nullable=True)
+    resolution_type = db.Column(db.String(50), nullable=True)  # user_marked_safe, cancelled, timeout, manual_resolution
 
     def to_dict(self):
         return {
@@ -26,5 +27,6 @@ class SOSAlert(db.Model):
             'address': self.address,
             'status': self.status,
             'triggered_at': self.triggered_at.isoformat(),
-            'resolved_at': self.resolved_at.isoformat() if self.resolved_at else None
+            'resolved_at': self.resolved_at.isoformat() if self.resolved_at else None,
+            'resolution_type': self.resolution_type
         }

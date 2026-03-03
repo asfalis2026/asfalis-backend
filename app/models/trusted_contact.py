@@ -13,6 +13,8 @@ class TrustedContact(db.Model):
     email = db.Column(db.String(255), nullable=True)
     relationship = db.Column(db.String(50), nullable=True)
     is_primary = db.Column(db.Boolean, default=False)
+    is_verified = db.Column(db.Boolean, default=False)
+    verified_at = db.Column(db.DateTime, nullable=True)
     created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
 
     def to_dict(self):
@@ -22,5 +24,7 @@ class TrustedContact(db.Model):
             'phone': self.phone,
             'email': self.email,
             'relationship': self.relationship,
-            'is_primary': self.is_primary
+            'is_primary': self.is_primary,
+            'is_verified': self.is_verified,
+            'verified_at': self.verified_at.isoformat() if self.verified_at else None
         }

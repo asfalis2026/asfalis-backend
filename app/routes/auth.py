@@ -5,6 +5,7 @@ from app.models.user import User
 from app.models.settings import UserSettings
 from app.models.trusted_contact import TrustedContact
 from app.models.revoked_token import RevokedToken
+from app.models.device_security import UserDeviceBinding, HandsetChangeRequest
 from app.utils.validators import validate_password
 from app.utils.otp import generate_otp, store_otp, verify_otp
 from app.services.sms_service import send_otp_sms
@@ -101,6 +102,44 @@ def _extract_bearer(request_obj) -> str | None:
     if header.startswith('Bearer '):
         return header[len('Bearer '):]
     return None
+
+
+def _latest_handover_request(user_id: str, new_device_imei: str) -> HandsetChangeRequest | None:
+    return HandsetChangeRequest.query.filter_by(
+        user_id=user_id,
+        new_device_imei=new_device_imei,
+        status='pending'
+    ).order_by(HandsetChangeRequest.requested_at.desc()).first()
+
+
+def _begin_or_get_handover_request(user_id: str, old_device_imei: str | None, new_device_imei: str) -> HandsetChangeRequest:
+    existing = _latest_handover_request(user_id, new_device_imei)
+    if existing:
+        return existing
+
+    req = HandsetChangeRequest(
+        user_id=user_id,
+        old_device_imei=old_device_imei,
+        new_device_imei=new_device_imei,
+        status='pending',
+        requested_at=datetime.utcnow(),
+        eligible_at=datetime.utcnow() + timedelta(hours=12)
+    )
+    db.session.add(req)
+    db.session.commit()
+    return req
+
+
+def _bind_user_to_device(user_id: str, device_imei: str):
+    binding = UserDeviceBinding.query.filter_by(user_id=user_id).first()
+    if not binding:
+        binding = UserDeviceBinding(user_id=user_id, device_imei=device_imei)
+        db.session.add(binding)
+    else:
+        binding.device_imei = device_imei
+        binding.updated_at = datetime.utcnow()
+    binding.last_login_at = datetime.utcnow()
+    db.session.commit()
 
 
 # ------------------------------------------------------------------ #
@@ -244,9 +283,64 @@ def login_phone():
         return jsonify(status="error", error_code="PHONE_NOT_VERIFIED",
                        message="Please verify your phone number before logging in."), 403
 
+    device_imei = (data.get('device_imei') or '').strip()
+    confirm_handover = bool(data.get('confirm_handover', False))
+
+    if device_imei:
+        binding = UserDeviceBinding.query.filter_by(user_id=user.id).first()
+
+        # First known login device for this account
+        if not binding:
+            _bind_user_to_device(user.id, device_imei)
+        # Normal login from currently bound device
+        elif binding.device_imei == device_imei:
+            binding.last_login_at = datetime.utcnow()
+            db.session.commit()
+        # Different device: create/return a pending handset change request
+        else:
+            req = _begin_or_get_handover_request(
+                user_id=user.id,
+                old_device_imei=binding.device_imei,
+                new_device_imei=device_imei,
+            )
+
+            if datetime.utcnow() < req.eligible_at:
+                remaining_seconds = int((req.eligible_at - datetime.utcnow()).total_seconds())
+                if remaining_seconds < 0:
+                    remaining_seconds = 0
+                return jsonify(
+                    status="error",
+                    error_code="HANDSET_CHANGE_PENDING",
+                    message="Login blocked on new device. Handset transfer becomes available after 12 hours.",
+                    data={
+                        "request_id": req.id,
+                        "eligible_at": req.eligible_at.isoformat() + "Z",
+                        "remaining_seconds": remaining_seconds,
+                        "confirm_handover_required": False,
+                    }
+                ), 403
+
+            if not confirm_handover:
+                return jsonify(
+                    status="error",
+                    error_code="HANDSET_CHANGE_CONFIRMATION_REQUIRED",
+                    message="Handset transfer window is open. Re-submit login with confirm_handover=true to transfer account to this device.",
+                    data={
+                        "request_id": req.id,
+                        "eligible_at": req.eligible_at.isoformat() + "Z",
+                        "confirm_handover_required": True,
+                    }
+                ), 403
+
+            # Finalize transfer to the new device
+            _bind_user_to_device(user.id, device_imei)
+            req.status = 'completed'
+            req.completed_at = datetime.utcnow()
+            db.session.commit()
+
     access_token, refresh_token, sos_token, expires_in = _make_tokens(user.id)
 
-    return jsonify(status="success", message="Login successful", data={
+    response_data = {
         "user_id": user.id,
         "full_name": user.full_name,
         "phone_number": user.phone,
@@ -254,7 +348,48 @@ def login_phone():
         "access_token": access_token,
         "refresh_token": refresh_token,
         "sos_token": sos_token,
-        "expires_in": expires_in
+        "expires_in": expires_in,
+    }
+    if device_imei:
+        response_data["device_imei"] = device_imei
+        response_data["device_binding_status"] = "BOUND"
+
+    return jsonify(status="success", message="Login successful", data=response_data), 200
+
+
+@auth_bp.route('/handset-change/status', methods=['POST'])
+def handset_change_status():
+    """Get pending handset transfer request status for a phone + device IMEI."""
+    data = request.get_json(silent=True) or {}
+    phone_number = data.get('phone_number')
+    device_imei = (data.get('device_imei') or '').strip()
+
+    if not phone_number or not device_imei:
+        return jsonify(
+            status="error",
+            error_code="VALIDATION_ERROR",
+            message="phone_number and device_imei are required"
+        ), 400
+
+    user = User.query.filter_by(phone=phone_number).first()
+    if not user:
+        return jsonify(status="error", error_code="NOT_FOUND", message="User not found"), 404
+
+    req = _latest_handover_request(user.id, device_imei)
+    if not req:
+        return jsonify(status="success", data={"has_pending_request": False}), 200
+
+    remaining_seconds = int((req.eligible_at - datetime.utcnow()).total_seconds())
+    if remaining_seconds < 0:
+        remaining_seconds = 0
+
+    return jsonify(status="success", data={
+        "has_pending_request": True,
+        "request_id": req.id,
+        "status": req.status,
+        "eligible_at": req.eligible_at.isoformat() + "Z",
+        "remaining_seconds": remaining_seconds,
+        "confirm_handover_required": datetime.utcnow() >= req.eligible_at,
     }), 200
 
 

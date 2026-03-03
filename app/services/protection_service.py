@@ -57,12 +57,16 @@ _sos_cooldown = {}
 SOS_COOLDOWN_SECONDS = 20
 
 
-def _is_on_cooldown(user_id):
+def _is_on_cooldown(user_id, cooldown_seconds=None):
     """Return True if the user has triggered an SOS within the last 20 seconds."""
+    if cooldown_seconds is None:
+        cooldown_seconds = SOS_COOLDOWN_SECONDS
+    if cooldown_seconds <= 0:
+        return False
     last_trigger = _sos_cooldown.get(user_id)
     if last_trigger is None:
         return False
-    return (time.time() - last_trigger) < SOS_COOLDOWN_SECONDS
+    return (time.time() - last_trigger) < cooldown_seconds
 
 
 def _mark_sos_triggered(user_id):

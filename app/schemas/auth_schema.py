@@ -23,6 +23,8 @@ class PhoneRegisterSchema(Schema):
 class PhoneLoginSchema(Schema):
     phone_number = fields.Str(required=True, validate=_validate_e164)
     password = fields.Str(required=True)
+    device_imei = fields.Str(required=False, allow_none=True, validate=validate.Length(min=8, max=64))
+    confirm_handover = fields.Bool(required=False, load_default=False)
 
 
 class VerifyPhoneOTPSchema(Schema):

@@ -128,3 +128,38 @@ def send_sos_sms(contact_phone, user_name, message_text, location_url):
         f"This is an automated alert from the Asfalis Women Safety app."
     )
     return send_sms(contact_phone, body)
+
+
+def send_contact_verification_otp(phone, otp_code):
+    """Send OTP for trusted contact verification. Returns the send status string."""
+    body = (
+        f"Your Asfalis trusted contact verification code is: {otp_code}. "
+        f"Valid for 5 minutes. Do not share."
+    )
+    return send_sms(phone, body)
+
+
+def send_contact_welcome_sms(contact_phone, sender_name, twilio_number, sandbox_code):
+    """Send welcome SMS to newly verified trusted contact."""
+    # For WhatsApp links, use the proper format without the + prefix
+    # WhatsApp link format: https://wa.me/<number>?text=<message>
+    # Strip all non-numeric characters from the phone number
+    clean_number = ''.join(filter(str.isdigit, twilio_number))
+    
+    # URL encode the sandbox code message
+    import urllib.parse
+    encoded_message = urllib.parse.quote(sandbox_code)
+    whatsapp_link = f"https://wa.me/{clean_number}?text={encoded_message}"
+    
+    body = (
+        f"✅ {sender_name} added you as a trusted contact in Asfalis, "
+        f"a personal safety app. You will receive emergency alerts with their "
+        f"location if they trigger an SOS.\n\n"
+        f"📱 To receive WhatsApp alerts:\n"
+        f"1. Save this number: {twilio_number}\n"
+        f"2. Send this message on WhatsApp: {sandbox_code}\n\n"
+        f"Quick link: {whatsapp_link}\n\n"
+        f"(Note: You must send the join code first to enable WhatsApp alerts)"
+    )
+    return send_sms(contact_phone, body)
+

@@ -56,6 +56,14 @@ active_protection_users = {}
 _sos_cooldown = {}
 SOS_COOLDOWN_SECONDS = 20
 
+# Maps the hardware sensor_type (from the client/schema) to the valid
+# DB trigger_type enum value in sos_alerts.trigger_type_enum.
+# This ensures the service never constructs an invalid enum string.
+SENSOR_TRIGGER_MAP = {
+    "accelerometer": "auto_fall",   # accelerometer data → fall detection
+    "gyroscope":     "auto_shake",  # gyroscope data    → shake detection
+}
+
 
 def _is_on_cooldown(user_id, cooldown_seconds=None):
     """Return True if the user has triggered an SOS within the last 20 seconds."""
@@ -227,7 +235,8 @@ def analyze_sensor_data(user_id, sensor_type, readings, sensitivity):
         lat = last_loc.latitude if last_loc else 0.0
         lng = last_loc.longitude if last_loc else 0.0
 
-        alert, msg = trigger_sos(user_id, lat, lng, trigger_type=f"auto_{sensor_type}")
+        trigger_type = SENSOR_TRIGGER_MAP.get(sensor_type, "auto_fall")
+        alert, msg = trigger_sos(user_id, lat, lng, trigger_type=trigger_type)
         _mark_sos_triggered(user_id)
 
         # Send WhatsApp alert
@@ -279,7 +288,7 @@ def predict_from_window(user_id, window_data, location="Unknown"):
         lat = last_loc.latitude if last_loc else 0.0
         lng = last_loc.longitude if last_loc else 0.0
 
-        alert, msg = trigger_sos(user_id, lat, lng, trigger_type="auto_sensor_window")
+        alert, msg = trigger_sos(user_id, lat, lng, trigger_type="auto_fall")
         _mark_sos_triggered(user_id)
 
         # Send WhatsApp alert

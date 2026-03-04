@@ -34,6 +34,8 @@ class SensorWindowSchema(Schema):
         validate=validate.OneOf(['accelerometer', 'gyroscope'])
     )
     location = fields.Str(missing="Unknown")
+    latitude = fields.Float(load_default=None, allow_none=True)
+    longitude = fields.Float(load_default=None, allow_none=True)
 
 class SensorTrainingSchema(Schema):
     sensor_type = fields.Str(required=True, validate=validate.OneOf(["accelerometer", "gyroscope"]))

@@ -52,9 +52,14 @@ def _get_model():
 # Active protection toggle per user
 active_protection_users = {}
 
-# SOS cooldown tracker: user_id -> last SOS trigger timestamp
+# Auto-SOS cooldown tracker: user_id -> last AUTO SOS trigger timestamp (10 min)
 _sos_cooldown = {}
-SOS_COOLDOWN_SECONDS = 20
+SOS_COOLDOWN_SECONDS = 600  # 10 minutes between Auto SOS triggers
+
+# Manual SOS cooldown tracker: user_id -> last MANUAL SOS trigger timestamp (20 s)
+# Kept separate so a manual SOS never blocks an auto-SOS and vice-versa.
+_manual_sos_cooldown = {}
+MANUAL_SOS_COOLDOWN_SECONDS = 20
 
 # Maps the hardware sensor_type (from the client/schema) to the valid
 # DB trigger_type enum value in sos_alerts.trigger_type_enum.
@@ -66,20 +71,39 @@ SENSOR_TRIGGER_MAP = {
 
 
 def _is_on_cooldown(user_id, cooldown_seconds=None):
-    """Return True if the user has triggered an SOS within the last 20 seconds."""
+    """Return (is_cooling, seconds_remaining) for the user's SOS rate-limit window."""
     if cooldown_seconds is None:
         cooldown_seconds = SOS_COOLDOWN_SECONDS
     if cooldown_seconds <= 0:
-        return False
+        return False, 0
     last_trigger = _sos_cooldown.get(user_id)
     if last_trigger is None:
-        return False
-    return (time.time() - last_trigger) < cooldown_seconds
+        return False, 0
+    elapsed = time.time() - last_trigger
+    if elapsed < cooldown_seconds:
+        return True, int(cooldown_seconds - elapsed)
+    return False, 0
 
 
 def _mark_sos_triggered(user_id):
-    """Record that an SOS was just triggered for cooldown tracking."""
+    """Record that an AUTO SOS was just triggered."""
     _sos_cooldown[user_id] = time.time()
+
+
+def _is_manual_on_cooldown(user_id):
+    """Return (is_cooling, seconds_remaining) for the manual SOS double-tap guard."""
+    last_trigger = _manual_sos_cooldown.get(user_id)
+    if last_trigger is None:
+        return False, 0
+    elapsed = time.time() - last_trigger
+    if elapsed < MANUAL_SOS_COOLDOWN_SECONDS:
+        return True, int(MANUAL_SOS_COOLDOWN_SECONDS - elapsed)
+    return False, 0
+
+
+def _mark_manual_sos_triggered(user_id):
+    """Record that a MANUAL SOS was just triggered."""
+    _manual_sos_cooldown[user_id] = time.time()
 
 
 # ---------------------------------------------------------------------------
@@ -133,18 +157,32 @@ def predict_danger(window_data, sensor_type='accelerometer'):
     if model is None:
         return 0, 0.0
 
-    features = extract_features(window_data, sensor_type)
-    
+    features = extract_features(window_data, sensor_type)  # shape (1, 17)
+
+    # ---------------------------------------------------------------------------
+    # Feature-count compatibility shim
+    # ---------------------------------------------------------------------------
+    # The model stored in the DB may have been trained before the two one-hot
+    # sensor-type columns were added to extract_features() (i.e. trained on 15
+    # features).  sklearn raises a hard ValueError when the column count doesn't
+    # match n_features_in_.  We detect this at runtime and trim the feature
+    # vector to match what the current model actually expects, so old models keep
+    # working without requiring an immediate retrain.
+    # Once the model is retrained via /protection/train-model (which now calls
+    # extract_features() and therefore produces 17 features), this shim becomes
+    # a no-op automatically.
+    expected_n = getattr(model, 'n_features_in_', None)
+    if expected_n is not None and features.shape[1] != expected_n:
+        features = features[:, :expected_n]
+
     # Get probability if the model supports it
     confidence = 0.0
     prediction = 0
-    
+
     if hasattr(model, 'predict_proba'):
         proba = model.predict_proba(features)[0]
         # proba is [prob_safe, prob_danger]
-        confidence = float(proba[1]) # Probability of Danger
-        # We don't use model.predict() here, we use threshold logic in analyze_sensor_data
-        # But for backward compatibility, let's say:
+        confidence = float(proba[1])  # Probability of Danger
         prediction = 1 if confidence > 0.5 else 0
     else:
         prediction = int(model.predict(features)[0])
@@ -267,11 +305,14 @@ def analyze_sensor_data(user_id, sensor_type, readings, sensitivity):
 
     if is_danger:
         # Check cooldown before triggering SOS
-        if _is_on_cooldown(user_id):
+        on_cooldown, secs_left = _is_on_cooldown(user_id)
+        if on_cooldown:
+            mins_left = (secs_left + 59) // 60
             return {
                 "alert_triggered": False,
                 "confidence": confidence_danger,
-                "message": "SOS on cooldown, please wait before triggering again."
+                "message": f"Auto SOS rate-limited. Next trigger allowed in {mins_left} min.",
+                "retry_after_seconds": secs_left
             }
 
         # Trigger SOS
@@ -284,28 +325,37 @@ def analyze_sensor_data(user_id, sensor_type, readings, sensitivity):
         alert, msg = trigger_sos(user_id, lat, lng, trigger_type=trigger_type)
         _mark_sos_triggered(user_id)
 
-        # Send WhatsApp alert
+        # Send WhatsApp alert (sync so we can capture sandbox errors)
         try:
-            from app.services.whatsapp_service import send_whatsapp_alert
+            from app.services.whatsapp_service import send_whatsapp_sync
             from app.models.trusted_contact import TrustedContact
             contacts = TrustedContact.query.filter_by(user_id=user_id).all()
             maps_link = f"https://maps.google.com/?q={lat},{lng}"
             whatsapp_msg = f"⚠ SOS ALERT!\nDanger detected via {sensor_type}!\nConfidence: {int(confidence_danger*100)}%\n📍 Location: {maps_link}"
+            delivery_report = []
             for contact in contacts:
-                send_whatsapp_alert(contact.phone, whatsapp_msg)
+                result = send_whatsapp_sync(contact.phone, whatsapp_msg)
+                delivery_report.append({"phone": contact.phone, **result})
+                if not result["success"]:
+                    current_app.logger.warning(
+                        f"Auto SOS WhatsApp failed for {contact.phone} "
+                        f"[{result['status']}] code={result['error_code']}: {result['error_msg']}"
+                    )
         except Exception as e:
             current_app.logger.error(f"WhatsApp alert failed: {e}")
+            delivery_report = []
 
         return {
             "alert_triggered": True,
             "alert_id": alert.id if alert else None,
-            "confidence": confidence_danger
+            "confidence": confidence_danger,
+            "delivery_report": delivery_report
         }
 
     return {"alert_triggered": False, "confidence": confidence_danger}
 
 
-def predict_from_window(user_id, window_data, sensor_type='accelerometer', location="Unknown"):
+def predict_from_window(user_id, window_data, sensor_type='accelerometer', location="Unknown", latitude=None, longitude=None):
     """Direct window-based prediction for the Auto SOS pipeline.
 
     Called by the frontend **after** the local threshold check fires —
@@ -318,6 +368,8 @@ def predict_from_window(user_id, window_data, sensor_type='accelerometer', locat
         window_data: list of [x, y, z] lists (pre-filtered by the client).
         sensor_type: 'accelerometer' or 'gyroscope' — determines trigger label.
         location: Optional human-readable location string.
+        latitude: GPS latitude from the device (preferred over DB fallback).
+        longitude: GPS longitude from the device (preferred over DB fallback).
 
     Returns:
         dict with prediction result and SOS status.
@@ -337,24 +389,30 @@ def predict_from_window(user_id, window_data, sensor_type='accelerometer', locat
 
     if prediction == 1:
         # Check cooldown
-        if _is_on_cooldown(user_id):
+        on_cooldown, secs_left = _is_on_cooldown(user_id)
+        if on_cooldown:
+            mins_left = (secs_left + 59) // 60
             response["sos_sent"] = False
-            response["message"] = "SOS on cooldown, please wait before triggering again."
+            response["message"] = f"Auto SOS rate-limited. Next trigger allowed in {mins_left} min."
+            response["retry_after_seconds"] = secs_left
             return response
 
-        # Trigger SOS
-        from app.services.location_service import get_last_location
-        last_loc = get_last_location(user_id)
-        lat = last_loc.latitude if last_loc else 0.0
-        lng = last_loc.longitude if last_loc else 0.0
+        # Resolve coordinates: prefer device-supplied GPS, fall back to DB
+        if latitude is not None and longitude is not None:
+            lat, lng = latitude, longitude
+        else:
+            from app.services.location_service import get_last_location
+            last_loc = get_last_location(user_id)
+            lat = last_loc.latitude if last_loc else 0.0
+            lng = last_loc.longitude if last_loc else 0.0
 
         trigger_type = SENSOR_TRIGGER_MAP.get(sensor_type, "auto_fall")
         alert, msg = trigger_sos(user_id, lat, lng, trigger_type=trigger_type)
         _mark_sos_triggered(user_id)
 
-        # Send WhatsApp alert
+        # Send WhatsApp alert (sync so we can capture sandbox errors)
         try:
-            from app.services.whatsapp_service import send_whatsapp_alert
+            from app.services.whatsapp_service import send_whatsapp_sync
             from app.models.trusted_contact import TrustedContact
             contacts = TrustedContact.query.filter_by(user_id=user_id).all()
             maps_link = f"https://maps.google.com/?q={lat},{lng}"
@@ -363,14 +421,23 @@ def predict_from_window(user_id, window_data, sensor_type='accelerometer', locat
                 f"Confidence: {int(confidence*100)}%\n"
                 f"📍 Location: {location}\n🗺 Map: {maps_link}"
             )
+            delivery_report = []
             for contact in contacts:
-                send_whatsapp_alert(contact.phone, whatsapp_msg)
+                result = send_whatsapp_sync(contact.phone, whatsapp_msg)
+                delivery_report.append({"phone": contact.phone, **result})
+                if not result["success"]:
+                    current_app.logger.warning(
+                        f"Auto SOS WhatsApp failed for {contact.phone} "
+                        f"[{result['status']}] code={result['error_code']}: {result['error_msg']}"
+                    )
         except Exception as e:
             current_app.logger.error(f"WhatsApp alert failed: {e}")
+            delivery_report = []
 
         response["sos_sent"] = True
         response["alert_id"] = alert.id if alert else None
         response["message"] = msg
+        response["delivery_report"] = delivery_report
 
     else:
         response["sos_sent"] = False

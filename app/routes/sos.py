@@ -26,8 +26,8 @@ def _serialize_sos_alert(alert, user_country):
     }
 
 class SOSTriggerSchema(Schema):
-    latitude = fields.Float(required=True)
-    longitude = fields.Float(required=True)
+    latitude = fields.Float(load_default=0.0)
+    longitude = fields.Float(load_default=0.0)
     trigger_type = fields.Str(missing='manual')
 
 @sos_bp.route('/trigger', methods=['POST'])
@@ -69,11 +69,11 @@ def send_now():
     if not alert_id:
         return jsonify(success=False, error={"code": "VALIDATION_ERROR", "message": "Missing alert_id"}), 400
 
-    success, msg = dispatch_sos(alert_id, current_user_id)
+    success, msg, delivery_report = dispatch_sos(alert_id, current_user_id)
     if not success:
          return jsonify(success=False, error={"code": "ERROR", "message": msg}), 400
 
-    return jsonify(success=True, message=msg), 200
+    return jsonify(success=True, message=msg, delivery_report=delivery_report), 200
 
 @sos_bp.route('/cancel', methods=['POST'])
 @jwt_required()
@@ -149,3 +149,39 @@ def history():
     user = User.query.get(current_user_id)
     payload = [_serialize_sos_alert(alert, user.country if user else None) for alert in alerts]
     return jsonify(success=True, data=payload), 200
+
+
+@sos_bp.route('/test-whatsapp', methods=['POST'])
+@jwt_required()
+def test_whatsapp():
+    """Dev/debug endpoint — sends a WhatsApp test message synchronously and
+    returns the raw Twilio delivery result so you can see exactly what fails.
+
+    Request body::
+        { "phone": "+919876543210" }   // E.164 format
+    """
+    data = request.json or {}
+    phone = data.get('phone', '').strip()
+    if not phone:
+        return jsonify(success=False, error="Missing 'phone' field"), 400
+
+    from app.services.whatsapp_service import send_whatsapp_sync
+    from flask import current_app
+
+    result = send_whatsapp_sync(
+        phone,
+        "🔔 Asfalis WhatsApp test message — if you see this, delivery is working!"
+    )
+
+    # Surface Twilio config being used (mask the token)
+    debug_config = {
+        "TWILIO_ACCOUNT_SID":    current_app.config.get('TWILIO_ACCOUNT_SID', 'NOT SET'),
+        "TWILIO_WHATSAPP_FROM":  current_app.config.get('TWILIO_WHATSAPP_FROM', 'NOT SET'),
+        "TWILIO_AUTH_TOKEN_SET": bool(current_app.config.get('TWILIO_AUTH_TOKEN')),
+    }
+
+    return jsonify(
+        success=result["success"],
+        delivery=result,
+        twilio_config=debug_config
+    ), (200 if result["success"] else 502)

@@ -286,7 +286,7 @@ def login_phone():
     device_imei = (data.get('device_imei') or '').strip()
     confirm_handover = bool(data.get('confirm_handover', False))
 
-    if device_imei:
+    if device_imei and current_app.config.get('IMEI_BINDING_ENABLED', False):
         binding = UserDeviceBinding.query.filter_by(user_id=user.id).first()
 
         # First known login device for this account

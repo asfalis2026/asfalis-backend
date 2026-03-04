@@ -28,17 +28,30 @@ def _get_configured_cooldown():
         return None
 
 def trigger_sos(user_id, lat, lng, trigger_type='manual'):
-    # Enforce cooldown across all SOS triggers (manual + sensor)
-    from app.services.protection_service import _is_on_cooldown, _mark_sos_triggered, SOS_COOLDOWN_SECONDS
+    # Auto-SOS (sensor-based): 10-minute cooldown via _sos_cooldown.
+    # Manual SOS: 20-second double-tap guard via _manual_sos_cooldown.
+    # The two stores are completely independent — a manual SOS never
+    # blocks an auto-SOS and an auto-SOS never blocks a manual one.
+    is_auto = trigger_type.startswith('auto')
 
-    cooldown_seconds = _get_configured_cooldown()
-    wait_window = cooldown_seconds if cooldown_seconds is not None else SOS_COOLDOWN_SECONDS
+    if is_auto:
+        from app.services.protection_service import (
+            _is_on_cooldown, _mark_sos_triggered
+        )
+        on_cooldown, secs_left = _is_on_cooldown(user_id)
+        mark_triggered = lambda: _mark_sos_triggered(user_id)
+    else:
+        from app.services.protection_service import (
+            _is_manual_on_cooldown, _mark_manual_sos_triggered
+        )
+        on_cooldown, secs_left = _is_manual_on_cooldown(user_id)
+        mark_triggered = lambda: _mark_manual_sos_triggered(user_id)
 
-    if _is_on_cooldown(user_id, cooldown_seconds):
+    if on_cooldown:
         existing = SOSAlert.query.filter_by(user_id=user_id, status='countdown').first()
         if existing:
-            return existing, f"SOS on cooldown — please wait {wait_window} seconds between triggers."
-        return None, f"SOS on cooldown — please wait {wait_window} seconds between triggers."
+            return existing, f"SOS on cooldown — please wait {secs_left}s before triggering again."
+        return None, f"SOS on cooldown — please wait {secs_left}s before triggering again."
 
     user = User.query.get(user_id)
     if not user:
@@ -80,8 +93,8 @@ def trigger_sos(user_id, lat, lng, trigger_type='manual'):
     db.session.add(new_alert)
     db.session.commit()
 
-    # Mark cooldown for this user
-    _mark_sos_triggered(user_id)
+    # Mark cooldown for this user (auto or manual store depending on trigger_type)
+    mark_triggered()
 
     # Do NOT auto-dispatch here. Client controls countdown state and decides:
     # - send-now on timeout / navigate home
@@ -106,33 +119,65 @@ def dispatch_sos(alert_id, user_id=None):
         return False, f"Alert cannot be dispatched from state: {alert.status}"
 
     user = User.query.get(alert.user_id)
-    contacts = TrustedContact.query.filter_by(user_id=user.id, is_verified=True).all()
+    contacts = TrustedContact.query.filter_by(user_id=user.id).all()
+
+    # Warn if none are app-verified (contact joined Twilio sandbox ≠ app OTP verified)
+    unverified = [c for c in contacts if not c.is_verified]
+    if unverified:
+        logger = logging.getLogger(__name__)
+        logger.warning(
+            f"{len(unverified)} contact(s) for user {user.id} are not app-verified "
+            "but will still receive the SOS alert."
+        )
 
     alert.status = 'sent'
     alert.sent_at = datetime.utcnow()
-    
-    contacted = []
-    
-    # Generate Google Maps Link
-    maps_link = f"https://maps.google.com/?q={alert.latitude},{alert.longitude}"
-    full_message = f"🚨 EMERGENCY ALERT 🚨\n\n{alert.sos_message}\n\n📍 Location: {maps_link}\n\nSent by Asfalis for {user.full_name}"
 
-    # Only send WhatsApp (no SMS to reduce costs)
+    # Generate Google Maps link and message body
+    maps_link = f"https://maps.google.com/?q={alert.latitude},{alert.longitude}"
+    full_message = (
+        f"🚨 EMERGENCY ALERT 🚨\n\n{alert.sos_message}\n\n"
+        f"📍 Location: {maps_link}\n\nSent by Asfalis for {user.full_name}"
+    )
+
+    from app.services.whatsapp_service import send_whatsapp_sync
+
+    contacted = []
+    delivery_report = []  # per-contact Twilio delivery status
+
     for contact in contacts:
         contacted.append(contact.phone)
-        
-        # Send WhatsApp alert only
-        try:
-            from app.services.whatsapp_service import send_whatsapp_alert
-            send_whatsapp_alert(contact.phone, full_message)
-        except Exception as e:
-            logger = logging.getLogger(__name__)
-            logger.error(f"WhatsApp alert to {contact.phone} failed: {e}")
-    
+        result = send_whatsapp_sync(contact.phone, full_message)
+        delivery_report.append({
+            "phone":      contact.phone,
+            "success":    result["success"],
+            "status":     result["status"],
+            "error_code": result["error_code"],
+            "error_msg":  result["error_msg"],
+        })
+        if not result["success"]:
+            _log = logging.getLogger(__name__)
+            _log.warning(
+                f"SOS delivery failed for {contact.phone} "
+                f"[{result['status']}] code={result['error_code']}: {result['error_msg']}"
+            )
+
     alert.contacted_numbers = contacted
     db.session.commit()
-    
-    return True, "SOS Dispatched via WhatsApp"
+
+    failed = [r for r in delivery_report if not r["success"]]
+    sandbox_issues = [r for r in failed if r["status"] in ("not_in_sandbox", "not_opted_in")]
+
+    summary = "SOS Dispatched via WhatsApp"
+    if sandbox_issues:
+        summary += (
+            f" ({len(sandbox_issues)} contact(s) not in Twilio sandbox — "
+            "they must text the sandbox join keyword first)"
+        )
+    elif failed:
+        summary += f" ({len(failed)} delivery failure(s) — check logs)"
+
+    return True, summary, delivery_report
 
 def cancel_sos(alert_id, user_id=None):
     alert = SOSAlert.query.get(alert_id)
@@ -198,8 +243,7 @@ def mark_user_safe(alert_id, user_id):
         return False, "User not found", 0
     
     contacts = TrustedContact.query.filter_by(
-        user_id=user_id,
-        is_verified=True
+        user_id=user_id
     ).all()
     
     if not notify_contacts:

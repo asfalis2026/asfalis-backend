@@ -33,3 +33,8 @@ class Config:
     
     MAX_TRUSTED_CONTACTS = int(os.environ.get('MAX_TRUSTED_CONTACTS', 5))
     SOS_COOLDOWN_SECONDS = int(os.environ.get('SOS_COOLDOWN_SECONDS', 20))
+
+    # Set to 'true' to enforce per-device IMEI binding and the 12-hour
+    # handset-transfer cooldown on login.  Set to 'false' (default) to
+    # bypass all IMEI checks — useful during development / testing.
+    IMEI_BINDING_ENABLED = os.environ.get('IMEI_BINDING_ENABLED', 'false').lower() == 'true'

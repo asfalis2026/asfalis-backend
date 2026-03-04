@@ -70,7 +70,9 @@ def predict():
         {
           "window":      [[x, y, z], ...],   // pre-filtered sensor readings
           "sensor_type": "accelerometer",    // or "gyroscope" (default: accelerometer)
-          "location":    "optional string"   // human-readable location label
+          "location":    "optional string",  // human-readable location label
+          "latitude":    12.9716,            // device GPS latitude  (optional but recommended)
+          "longitude":   77.5946             // device GPS longitude (optional but recommended)
         }
 
     Response::
@@ -95,7 +97,9 @@ def predict():
         current_user_id,
         data['window'],
         sensor_type=data.get('sensor_type', 'accelerometer'),
-        location=data.get('location', 'Unknown')
+        location=data.get('location', 'Unknown'),
+        latitude=data.get('latitude'),
+        longitude=data.get('longitude')
     )
 
     return jsonify(success=True, data=result), 200

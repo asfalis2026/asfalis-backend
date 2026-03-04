@@ -157,16 +157,61 @@ def predict_danger(window_data, sensor_type='accelerometer'):
 # Public API
 # ---------------------------------------------------------------------------
 def toggle_protection(user_id, is_active):
+    """Toggle Auto SOS on/off for the given user.
+
+    Persists the flag to ``user_settings.auto_sos_enabled`` so the preference
+    survives server restarts.  The in-memory ``active_protection_users`` cache
+    is updated simultaneously so subsequent requests within the same process
+    are still O(1).
+    """
+    from app.models.settings import UserSettings
+    from app.extensions import db
+
+    # Persist to DB
+    settings = UserSettings.query.filter_by(user_id=user_id).first()
+    if settings:
+        settings.auto_sos_enabled = is_active
+        try:
+            db.session.commit()
+        except Exception as e:
+            db.session.rollback()
+            print(f"⚠️ Failed to persist protection toggle: {e}")
+
+    # Keep in-memory cache in sync
     if is_active:
         active_protection_users[user_id] = True
-        return True, "Protection activated"
+        return True, "Auto SOS protection activated"
     else:
         active_protection_users.pop(user_id, None)
-        return True, "Protection deactivated"
+        return True, "Auto SOS protection deactivated"
+
+
+def _is_protection_active(user_id):
+    """Return True if Auto SOS is enabled for user_id.
+
+    Checks the fast in-memory cache first.  On cache miss (e.g. after a
+    server restart) it falls back to the DB and warms the cache for the
+    next call.
+    """
+    # Fast path
+    if active_protection_users.get(user_id):
+        return True
+
+    # Slow path: DB look-up (only once per user per process lifetime)
+    try:
+        from app.models.settings import UserSettings
+        settings = UserSettings.query.filter_by(user_id=user_id).first()
+        if settings and settings.auto_sos_enabled:
+            active_protection_users[user_id] = True  # warm cache
+            return True
+    except Exception:
+        pass
+
+    return False
 
 
 def get_protection_status(user_id):
-    is_active = active_protection_users.get(user_id, False)
+    is_active = _is_protection_active(user_id)
     
     # Check for connected bracelet
     from app.models.device import ConnectedDevice
@@ -186,7 +231,7 @@ def analyze_sensor_data(user_id, sensor_type, readings, sensitivity):
     High Sensitivity -> Trigger on lower confidence (e.g., > 30%)
     Low Sensitivity -> Trigger only on high confidence (e.g., > 80%)
     """
-    if not active_protection_users.get(user_id):
+    if not _is_protection_active(user_id):
         return {"alert_triggered": False, "confidence": 0.0}
 
     # Convert [{x, y, z, timestamp}, ...] into [[x, y, z], ...]
@@ -260,20 +305,35 @@ def analyze_sensor_data(user_id, sensor_type, readings, sensitivity):
     return {"alert_triggered": False, "confidence": confidence_danger}
 
 
-def predict_from_window(user_id, window_data, location="Unknown"):
-    """Direct window-based prediction (mirrors dummy_server.py /predict).
+def predict_from_window(user_id, window_data, sensor_type='accelerometer', location="Unknown"):
+    """Direct window-based prediction for the Auto SOS pipeline.
+
+    Called by the frontend **after** the local threshold check fires —
+    i.e. the raw sensor magnitude already exceeded the user-configured
+    threshold on-device.  This function runs the ML model and, if danger
+    is predicted, starts an SOS countdown.
 
     Args:
         user_id: The authenticated user's ID.
-        window_data: list of [x, y, z] lists.
-        location: Optional location string.
+        window_data: list of [x, y, z] lists (pre-filtered by the client).
+        sensor_type: 'accelerometer' or 'gyroscope' — determines trigger label.
+        location: Optional human-readable location string.
 
     Returns:
-        dict with prediction result.
+        dict with prediction result and SOS status.
     """
-    prediction, confidence = predict_danger(window_data)
+    # Guard: only process if Auto SOS is toggled on
+    if not _is_protection_active(user_id):
+        return {
+            "prediction": 0,
+            "confidence": 0.0,
+            "sos_sent": False,
+            "message": "Auto SOS is not enabled. Toggle it on first."
+        }
 
-    response = {"prediction": prediction, "confidence": confidence}
+    prediction, confidence = predict_danger(window_data, sensor_type)
+
+    response = {"prediction": prediction, "confidence": confidence, "sensor_type": sensor_type}
 
     if prediction == 1:
         # Check cooldown
@@ -288,7 +348,8 @@ def predict_from_window(user_id, window_data, location="Unknown"):
         lat = last_loc.latitude if last_loc else 0.0
         lng = last_loc.longitude if last_loc else 0.0
 
-        alert, msg = trigger_sos(user_id, lat, lng, trigger_type="auto_fall")
+        trigger_type = SENSOR_TRIGGER_MAP.get(sensor_type, "auto_fall")
+        alert, msg = trigger_sos(user_id, lat, lng, trigger_type=trigger_type)
         _mark_sos_triggered(user_id)
 
         # Send WhatsApp alert
@@ -297,7 +358,11 @@ def predict_from_window(user_id, window_data, location="Unknown"):
             from app.models.trusted_contact import TrustedContact
             contacts = TrustedContact.query.filter_by(user_id=user_id).all()
             maps_link = f"https://maps.google.com/?q={lat},{lng}"
-            whatsapp_msg = f"⚠ SOS ALERT!\nDanger detected!\n📍 Location: {location}\n🗺 Map: {maps_link}"
+            whatsapp_msg = (
+                f"⚠ SOS ALERT!\nDanger detected via {sensor_type}!\n"
+                f"Confidence: {int(confidence*100)}%\n"
+                f"📍 Location: {location}\n🗺 Map: {maps_link}"
+            )
             for contact in contacts:
                 send_whatsapp_alert(contact.phone, whatsapp_msg)
         except Exception as e:
@@ -305,6 +370,10 @@ def predict_from_window(user_id, window_data, location="Unknown"):
 
         response["sos_sent"] = True
         response["alert_id"] = alert.id if alert else None
+        response["message"] = msg
+
+    else:
+        response["sos_sent"] = False
 
     return response
 
@@ -346,4 +415,65 @@ def save_training_data(user_id, sensor_type, readings, label, is_verified=False)
     except Exception as e:
         db.session.rollback()
         current_app.logger.error(f"Failed to save training data: {e}")
+        return False, str(e)
+
+
+def submit_sos_feedback(user_id, alert_id, is_false_alarm):
+    """Record user feedback after an Auto SOS event.
+
+    When the user confirms the SOS was a false alarm (``is_false_alarm=True``)
+    or a genuine danger (``is_false_alarm=False``), we re-label the sensor data
+    that was captured around that alert so the ML model can learn from the
+    correction on the next training run.
+
+    Args:
+        user_id:        Authenticated user ID.
+        alert_id:       SOSAlert UUID that the feedback refers to.
+        is_false_alarm: True  → user says it was NOT danger (label 0).
+                        False → user confirms it WAS danger (label 1).
+
+    Returns:
+        (success: bool, message: str)
+    """
+    from app.models.sos_alert import SOSAlert
+    from app.models.sensor_data import SensorTrainingData
+    from app.extensions import db
+
+    alert = SOSAlert.query.filter_by(id=alert_id, user_id=user_id).first()
+    if not alert:
+        return False, "Alert not found or does not belong to you"
+
+    # Determine the correct label from feedback
+    correct_label = 0 if is_false_alarm else 1
+
+    try:
+        # Find the unverified sensor records captured around this alert's timestamp
+        from datetime import timedelta
+        window_start = alert.triggered_at - timedelta(seconds=5)
+        window_end   = alert.triggered_at + timedelta(seconds=5)
+
+        records = SensorTrainingData.query.filter(
+            SensorTrainingData.user_id == user_id,
+            SensorTrainingData.is_verified == False,  # noqa: E712
+            SensorTrainingData.created_at.between(window_start, window_end)
+        ).all()
+
+        updated = 0
+        for record in records:
+            record.label = correct_label
+            record.is_verified = True
+            updated += 1
+
+        # If the alert was a false alarm and it's still in countdown, cancel it
+        if is_false_alarm and alert.status == 'countdown':
+            alert.status = 'cancelled'
+            from datetime import datetime
+            alert.resolved_at = datetime.utcnow()
+            alert.resolution_type = 'false_alarm'
+
+        db.session.commit()
+        return True, f"Feedback saved — {updated} training record(s) re-labelled as {'safe' if is_false_alarm else 'danger'}."
+    except Exception as e:
+        db.session.rollback()
+        current_app.logger.error(f"Failed to save SOS feedback: {e}")
         return False, str(e)

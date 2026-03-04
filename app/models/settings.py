@@ -13,6 +13,9 @@ class UserSettings(db.Model):
     shake_sensitivity = db.Column(db.Enum('low', 'medium', 'high', name='sensitivity_enum'), default='medium')
     battery_optimization = db.Column(db.Boolean, default=True)
     haptic_feedback = db.Column(db.Boolean, default=True)
+    # Auto SOS: when True, sensor data (accel/gyro) is processed by the ML model
+    # and triggers SOS automatically if danger is detected.
+    auto_sos_enabled = db.Column(db.Boolean, default=False, nullable=False)
     updated_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     def to_dict(self):
@@ -21,5 +24,6 @@ class UserSettings(db.Model):
             'sos_message': self.sos_message,
             'shake_sensitivity': self.shake_sensitivity,
             'battery_optimization': self.battery_optimization,
-            'haptic_feedback': self.haptic_feedback
+            'haptic_feedback': self.haptic_feedback,
+            'auto_sos_enabled': self.auto_sos_enabled
         }

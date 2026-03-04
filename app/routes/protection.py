@@ -3,7 +3,8 @@ from flask import Blueprint, jsonify, request
 from flask_jwt_extended import jwt_required, get_jwt_identity
 from app.schemas.protection_schema import ToggleProtectionSchema, SensorDataSchema, SensorWindowSchema
 from app.services.protection_service import (
-    toggle_protection, get_protection_status, analyze_sensor_data, predict_from_window
+    toggle_protection, get_protection_status, analyze_sensor_data,
+    predict_from_window, submit_sos_feedback
 )
 from marshmallow import ValidationError
 import threading
@@ -57,10 +58,31 @@ def sensor_data():
 @protection_bp.route('/predict', methods=['POST'])
 @jwt_required()
 def predict():
-    """ML-based danger prediction from a raw sensor window.
+    """Auto SOS: ML-based danger prediction from a sensor window.
 
-    Accepts: {"window": [[x,y,z], ...], "location": "optional string"}
-    Returns: {"prediction": 0|1, "confidence": float, "sos_sent": bool}
+    The frontend calls this endpoint **only** when the local sensor magnitude
+    already exceeded the user-configured threshold.  If the toggle is off the
+    request is rejected.  If the model predicts danger an SOS countdown is
+    started automatically.
+
+    Request body::
+
+        {
+          "window":      [[x, y, z], ...],   // pre-filtered sensor readings
+          "sensor_type": "accelerometer",    // or "gyroscope" (default: accelerometer)
+          "location":    "optional string"   // human-readable location label
+        }
+
+    Response::
+
+        {
+          "prediction":  0 | 1,
+          "confidence":  float,
+          "sensor_type": str,
+          "sos_sent":    bool,
+          "alert_id":    str | null,
+          "message":     str | null
+        }
     """
     current_user_id = get_jwt_identity()
     schema = SensorWindowSchema()
@@ -72,7 +94,8 @@ def predict():
     result = predict_from_window(
         current_user_id,
         data['window'],
-        data.get('location', 'Unknown')
+        sensor_type=data.get('sensor_type', 'accelerometer'),
+        location=data.get('location', 'Unknown')
     )
 
     return jsonify(success=True, data=result), 200
@@ -162,24 +185,17 @@ def train_model():
                     for i in range(num_windows):
                         start = i * FEATURE_WINDOW_SIZE
                         end = start + FEATURE_WINDOW_SIZE
-                        
+
                         w_x = raw_x[start:end]
                         w_y = raw_y[start:end]
                         w_z = raw_z[start:end]
                         w_label = labels[start]
-                        
-                        feats = []
-                        for axis in [w_x, w_y, w_z]:
-                            feats += [axis.mean(), axis.std(), axis.max(), axis.min(), np.sum(axis ** 2)]
-                        
-                        # Sensor type one-hot encoding
-                        if stype == 'accelerometer':
-                            feats += [1, 0]
-                        elif stype == 'gyroscope':
-                            feats += [0, 1]
-                        else:
-                            feats += [0, 0]
-                        
+
+                        # Use the canonical extract_features() so training and
+                        # inference are guaranteed to produce identical feature vectors.
+                        window = np.column_stack([w_x, w_y, w_z])  # shape (N, 3)
+                        feats = extract_features(window, stype).flatten()  # shape (17,)
+
                         X_features.append(feats)
                         y_labels.append(w_label)
                 
@@ -232,3 +248,48 @@ def train_model():
     thread.start()
     
     return jsonify(success=True, message="Model training started in background. Check server logs for progress."), 202
+
+
+@protection_bp.route('/feedback/<string:alert_id>', methods=['POST'])
+@jwt_required()
+def sos_feedback(alert_id):
+    """User feedback after an Auto SOS event (false alarm / confirmed danger).
+
+    After the countdown resolves the frontend should call this endpoint so the
+    ML model can learn from the user's correction.  Re-labelling the captured
+    sensor data improves future predictions.
+
+    Request body::
+
+        {
+          "is_false_alarm": true   // true = was NOT danger, false = was danger
+        }
+
+    Response::
+
+        {
+          "success": true,
+          "message": "Feedback saved — N training record(s) re-labelled as safe."
+        }
+    """
+    current_user_id = get_jwt_identity()
+    data = request.get_json(silent=True) or {}
+
+    if 'is_false_alarm' not in data:
+        return jsonify(success=False, error={
+            "code": "VALIDATION_ERROR",
+            "message": "Missing required field: is_false_alarm (bool)"
+        }), 400
+
+    success, msg = submit_sos_feedback(
+        current_user_id,
+        alert_id,
+        bool(data['is_false_alarm'])
+    )
+
+    if not success:
+        code = "ALERT_NOT_FOUND" if "not found" in msg.lower() else "DB_ERROR"
+        status = 404 if code == "ALERT_NOT_FOUND" else 500
+        return jsonify(success=False, error={"code": code, "message": msg}), status
+
+    return jsonify(success=True, message=msg), 200

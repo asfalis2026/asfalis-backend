@@ -39,6 +39,14 @@ def update_settings():
     if 'shake_sensitivity' in data: settings.shake_sensitivity = data['shake_sensitivity']
     if 'battery_optimization' in data: settings.battery_optimization = data['battery_optimization']
     if 'haptic_feedback' in data: settings.haptic_feedback = data['haptic_feedback']
+    if 'auto_sos_enabled' in data:
+        settings.auto_sos_enabled = data['auto_sos_enabled']
+        # Keep the fast in-memory protection cache in sync with the DB flag
+        from app.services.protection_service import active_protection_users
+        if data['auto_sos_enabled']:
+            active_protection_users[current_user_id] = True
+        else:
+            active_protection_users.pop(current_user_id, None)
 
     db.session.commit()
     return jsonify(success=True, data=settings.to_dict()), 200

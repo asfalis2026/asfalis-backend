@@ -7,3 +7,5 @@ class SettingsSchema(Schema):
     shake_sensitivity = fields.Str(validate=validate.OneOf(["low", "medium", "high"]))
     battery_optimization = fields.Bool()
     haptic_feedback = fields.Bool()
+    # Controls whether the device-side accelerometer/gyroscope Auto SOS is enabled
+    auto_sos_enabled = fields.Bool()

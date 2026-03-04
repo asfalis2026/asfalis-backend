@@ -68,29 +68,20 @@ def train():
         for i in range(num_windows):
             start = i * FEATURE_WINDOW_SIZE
             end = start + FEATURE_WINDOW_SIZE
-            
-            # Extract statistical features (Mean, Std, Max, Min, SumSq) for X, Y, Z
-            # Total 15 features
+
             w_x = raw_x[start:end]
             w_y = raw_y[start:end]
             w_z = raw_z[start:end]
-            
-            # Label: use the majority vote or the first label of the window
-            # Since we auto-label the whole batch, they are likely same.
-            w_label = labels[start] 
-            
-            feats = []
-            for axis in [w_x, w_y, w_z]:
-                feats += [axis.mean(), axis.std(), axis.max(), axis.min(), np.sum(axis ** 2)]
-            
-            # 2. Add Sensor Type One-Hot Encoding
-            if stype == 'accelerometer':
-                feats += [1, 0]
-            elif stype == 'gyroscope':
-                feats += [0, 1]
-            else:
-                feats += [0, 0]
-                
+
+            # Label: use the first label of the window
+            # (auto-labelled batches are typically uniform)
+            w_label = labels[start]
+
+            # Use the canonical extract_features() so training and inference
+            # are guaranteed to produce identical feature vectors.
+            window = np.column_stack([w_x, w_y, w_z])  # shape (N, 3)
+            feats = extract_features(window, stype).flatten()  # shape (17,)
+
             X_features.append(feats)
             y_labels.append(w_label)
             

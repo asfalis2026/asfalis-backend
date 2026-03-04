@@ -16,11 +16,22 @@ class SensorDataSchema(Schema):
     sensitivity = fields.Str(missing="medium")
 
 class SensorWindowSchema(Schema):
-    """Schema for the /predict endpoint — accepts a raw window of [x, y, z] readings."""
+    """Schema for the /predict endpoint.
+
+    The frontend calls this endpoint **only** when the local sensor reading
+    already exceeded the user-configured threshold.  The backend then runs
+    the ML model and, if danger is predicted, triggers an Auto SOS countdown.
+    """
+    # Pre-filtered window of [x, y, z] readings
     window = fields.List(
         fields.List(fields.Float(), required=True),
         required=True,
         validate=validate.Length(min=3)
+    )
+    # Which sensor produced the reading
+    sensor_type = fields.Str(
+        missing='accelerometer',
+        validate=validate.OneOf(['accelerometer', 'gyroscope'])
     )
     location = fields.Str(missing="Unknown")
 

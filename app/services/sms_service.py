@@ -130,13 +130,46 @@ def send_sos_sms(contact_phone, user_name, message_text, location_url):
     return send_sms(contact_phone, body)
 
 
+def send_sms_sync(to, body):
+    """
+    Send SMS synchronously (blocking). Used for OTP paths where we must
+    know whether delivery succeeded before returning the HTTP response.
+
+    Returns (True, sid) on success, (False, error_str) on failure.
+    """
+    try:
+        account_sid = current_app.config.get('TWILIO_ACCOUNT_SID')
+        auth_token = current_app.config.get('TWILIO_AUTH_TOKEN')
+        twilio_phone = current_app.config.get('TWILIO_PHONE_NUMBER')
+
+        if not all([account_sid, auth_token, twilio_phone]):
+            logger.warning("Twilio not configured — cannot send SMS.")
+            logger.info(f"[MOCK SMS] To={to} | Body={body}")
+            return False, "twilio_not_configured"
+
+        client = Client(account_sid, auth_token)
+        message = client.messages.create(body=body, from_=twilio_phone, to=to)
+        logger.info(f"SMS sent to {to}: SID={message.sid}")
+        return True, message.sid
+
+    except Exception as e:
+        logger.error(f"Twilio failed to send SMS to {to}: {e}")
+        # Log body so OTP can be recovered from server logs if needed.
+        logger.warning(f"[DEV FALLBACK] SMS body for {to}: {body}")
+        return False, str(e)
+
+
 def send_contact_verification_otp(phone, otp_code):
-    """Send OTP for trusted contact verification. Returns the send status string."""
+    """Send OTP for trusted contact verification.
+
+    Returns (True, sid) on successful delivery, (False, error_str) on failure.
+    Uses synchronous sending so the caller can detect and surface Twilio errors.
+    """
     body = (
         f"Your Asfalis trusted contact verification code is: {otp_code}. "
         f"Valid for 5 minutes. Do not share."
     )
-    return send_sms(phone, body)
+    return send_sms_sync(phone, body)
 
 
 def send_contact_welcome_sms(contact_phone, sender_name, twilio_number, sandbox_code):

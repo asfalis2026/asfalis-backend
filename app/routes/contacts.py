@@ -89,25 +89,37 @@ def add_contact():
         logger.error(f"Failed to create pending contact for user {current_user_id}: {e}")
         return jsonify(success=False, error={"code": "INTERNAL_ERROR", "message": "Failed to initiate contact verification"}), 500
 
-    # Send OTP via Twilio SMS
-    send_status = send_contact_verification_otp(phone, otp_code)
-    logger.info(f"OTP sent for trusted contact verification to {phone}: {send_status}")
+    # Send OTP via Twilio SMS (synchronous so we can detect failures)
+    sms_ok, sms_detail = send_contact_verification_otp(phone, otp_code)
+    logger.info(f"OTP send for trusted contact {phone}: success={sms_ok} detail={sms_detail}")
 
     resp_data = {
         "contact_id": new_contact.id,
         "phone": phone,
-        "otp_sent": send_status not in (None,),
-        "sms_status": send_status,
+        "otp_sent": sms_ok,
         "expires_in_seconds": Config.OTP_EXPIRY_SECONDS
     }
-    # In development mode expose the OTP so testing is possible without
-    # a working Twilio account (mirrors the pattern used in auth routes).
-    if current_app.debug:
+
+    if not sms_ok:
+        # SMS could not be delivered (e.g. Twilio trial account restriction).
+        # Return the OTP in the response so verification can still proceed.
+        resp_data["otp_code"] = otp_code
+        resp_data["sms_error"] = sms_detail
+        resp_data["note"] = (
+            "SMS delivery failed. Use the otp_code from this response to verify. "
+            "On a paid Twilio account this field will not appear."
+        )
+        logger.warning(
+            f"SMS delivery failed for {phone}: {sms_detail} — "
+            f"OTP included in response as fallback"
+        )
+    elif current_app.debug:
+        # Debug mode: expose OTP for easy local testing even when SMS succeeds.
         resp_data["otp_code"] = otp_code
 
     return jsonify(
         success=True,
-        message="OTP sent to contact's phone number",
+        message="OTP sent to contact's phone number" if sms_ok else "OTP generated (SMS delivery failed — see otp_code in response)",
         data=resp_data
     ), 200
 
@@ -250,24 +262,34 @@ def resend_contact_otp():
         logger.error(f"Failed to create new OTP for contact {contact_id}: {e}")
         return jsonify(success=False, error={"code": "INTERNAL_ERROR", "message": "Failed to resend OTP"}), 500
     
-    # Send OTP via Twilio SMS
-    send_status = send_contact_verification_otp(contact.phone, otp_code)
-    logger.info(f"OTP resent for trusted contact {contact.phone}: {send_status}")
+    # Send OTP via Twilio SMS (synchronous so we can detect failures)
+    sms_ok, sms_detail = send_contact_verification_otp(contact.phone, otp_code)
+    logger.info(f"OTP resend for trusted contact {contact.phone}: success={sms_ok} detail={sms_detail}")
 
     resp_data = {
         "contact_id": contact.id,
         "phone": contact.phone,
-        "sms_status": send_status,
+        "otp_sent": sms_ok,
         "expires_in_seconds": Config.OTP_EXPIRY_SECONDS
     }
-    # In development mode expose the OTP so testing is possible without
-    # a working Twilio account (mirrors the pattern used in auth routes).
-    if current_app.debug:
+
+    if not sms_ok:
+        resp_data["otp_code"] = otp_code
+        resp_data["sms_error"] = sms_detail
+        resp_data["note"] = (
+            "SMS delivery failed. Use the otp_code from this response to verify. "
+            "On a paid Twilio account this field will not appear."
+        )
+        logger.warning(
+            f"SMS delivery failed for {contact.phone}: {sms_detail} — "
+            f"OTP included in response as fallback"
+        )
+    elif current_app.debug:
         resp_data["otp_code"] = otp_code
 
     return jsonify(
         success=True,
-        message="OTP resent successfully",
+        message="OTP resent successfully" if sms_ok else "OTP generated (SMS delivery failed — see otp_code in response)",
         data=resp_data
     ), 200
 

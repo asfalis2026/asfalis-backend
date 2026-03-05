@@ -21,6 +21,9 @@ class Config:
     TWILIO_AUTH_TOKEN = os.environ.get('TWILIO_AUTH_TOKEN')
     TWILIO_PHONE_NUMBER = os.environ.get('TWILIO_PHONE_NUMBER')
     TWILIO_VERIFY_SERVICE_SID = os.environ.get('TWILIO_VERIFY_SERVICE_SID')
+    # Separate WhatsApp account credentials (Account 2)
+    TWILIO_WA_ACCOUNT_SID = os.environ.get('TWILIO_WA_ACCOUNT_SID')
+    TWILIO_WA_AUTH_TOKEN = os.environ.get('TWILIO_WA_AUTH_TOKEN')
     TWILIO_WHATSAPP_FROM = os.environ.get('TWILIO_WHATSAPP_FROM', 'whatsapp:+14155238886')
     TWILIO_SANDBOX_CODE = os.environ.get('TWILIO_SANDBOX_CODE', 'join <sandbox-code>')
     

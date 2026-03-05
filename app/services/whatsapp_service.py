@@ -42,8 +42,10 @@ def send_whatsapp_sync(to_number, message, app_ctx=None):
             error_msg    str    – Human-readable reason (None on success).
     """
     ctx = app_ctx or current_app._get_current_object()
-    account_sid = ctx.config.get('TWILIO_ACCOUNT_SID')
-    auth_token  = ctx.config.get('TWILIO_AUTH_TOKEN')
+    # Use the dedicated WhatsApp account credentials (Account 2).
+    # Fall back to the generic SMS credentials if WA-specific ones are absent.
+    account_sid = ctx.config.get('TWILIO_WA_ACCOUNT_SID') or ctx.config.get('TWILIO_ACCOUNT_SID')
+    auth_token  = ctx.config.get('TWILIO_WA_AUTH_TOKEN')  or ctx.config.get('TWILIO_AUTH_TOKEN')
     whatsapp_from = ctx.config.get('TWILIO_WHATSAPP_FROM')
 
     if not all([account_sid, auth_token, whatsapp_from]):

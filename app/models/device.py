@@ -15,6 +15,9 @@ class ConnectedDevice(db.Model):
     battery_level = db.Column(db.Integer, nullable=True)
     last_seen = db.Column(db.DateTime, nullable=True)
     paired_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
+    # Tracks the last physical button press timestamp for IoT double-tap detection.
+    # Two presses within IOT_DOUBLE_TAP_WINDOW_SECONDS → SOS cancel; otherwise → SOS trigger.
+    last_button_press_at = db.Column(db.DateTime, nullable=True)
 
     def to_dict(self):
         return {
@@ -23,5 +26,6 @@ class ConnectedDevice(db.Model):
             'is_connected': self.is_connected,
             'battery_level': self.battery_level,
             'firmware_version': self.firmware_version,
-            'last_seen': self.last_seen.isoformat() if self.last_seen else None
+            'last_seen': self.last_seen.isoformat() if self.last_seen else None,
+            'last_button_press_at': self.last_button_press_at.isoformat() if self.last_button_press_at else None
         }

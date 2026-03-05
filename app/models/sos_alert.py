@@ -8,7 +8,7 @@ class SOSAlert(db.Model):
 
     id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     user_id = db.Column(db.String(36), db.ForeignKey('users.id'), nullable=False)
-    trigger_type = db.Column(db.Enum('manual', 'auto_fall', 'auto_shake', 'bracelet', name='trigger_type_enum'), nullable=False)
+    trigger_type = db.Column(db.Enum('manual', 'auto_fall', 'auto_shake', 'bracelet', 'iot_button', name='trigger_type_enum'), nullable=False)
     latitude = db.Column(db.Float, nullable=False)
     longitude = db.Column(db.Float, nullable=False)
     address = db.Column(db.String(500), nullable=True)

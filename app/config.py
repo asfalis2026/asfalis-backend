@@ -41,3 +41,8 @@ class Config:
     # handset-transfer cooldown on login.  Set to 'false' (default) to
     # bypass all IMEI checks — useful during development / testing.
     IMEI_BINDING_ENABLED = os.environ.get('IMEI_BINDING_ENABLED', 'false').lower() == 'true'
+
+    # IoT wearable (ESP32) button double-tap window.
+    # Two button-press events received within this many seconds = cancel SOS.
+    # A single press outside this window = trigger SOS countdown.
+    IOT_DOUBLE_TAP_WINDOW_SECONDS = float(os.environ.get('IOT_DOUBLE_TAP_WINDOW_SECONDS', 1.5))

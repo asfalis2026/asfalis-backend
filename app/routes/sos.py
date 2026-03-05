@@ -57,6 +57,13 @@ def trigger():
     user = User.query.get(current_user_id)
     payload = _serialize_sos_alert(alert, user.country if user else None)
 
+    # Enrich response with fields the Android IotSosTracker / SosViewModel expect.
+    # countdown_seconds: how long the app shows the cancellation window before dispatching.
+    # contacts_to_notify: lets the countdown screen display "Notifying N contacts".
+    from flask import current_app
+    payload['countdown_seconds'] = current_app.config.get('SOS_COUNTDOWN_SECONDS', 10)
+    payload['contacts_to_notify'] = TrustedContact.query.filter_by(user_id=current_user_id).count()
+
     return jsonify(success=True, data=payload, message=msg), 201
 
 @sos_bp.route('/send-now', methods=['POST'])

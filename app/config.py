@@ -36,6 +36,10 @@ class Config:
     
     MAX_TRUSTED_CONTACTS = int(os.environ.get('MAX_TRUSTED_CONTACTS', 5))
     SOS_COOLDOWN_SECONDS = int(os.environ.get('SOS_COOLDOWN_SECONDS', 20))
+    # Duration (seconds) of the SOS countdown shown in the app before dispatching.
+    # Returned in every POST /api/sos/trigger response so the app doesn't
+    # hard-code it.  Android IotSosTracker and SosViewModel both read this value.
+    SOS_COUNTDOWN_SECONDS = int(os.environ.get('SOS_COUNTDOWN_SECONDS', 10))
 
     # Set to 'true' to enforce per-device IMEI binding and the 12-hour
     # handset-transfer cooldown on login.  Set to 'false' (default) to

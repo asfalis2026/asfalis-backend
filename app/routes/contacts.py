@@ -1,5 +1,5 @@
 
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, jsonify, request, current_app
 from flask_jwt_extended import jwt_required, get_jwt_identity
 from app.models.trusted_contact import TrustedContact
 from app.models.otp import OTPRecord
@@ -52,7 +52,14 @@ def add_contact():
     # Generate OTP
     otp_code = str(random.randint(100000, 999999))
     expires_at = datetime.utcnow() + timedelta(seconds=Config.OTP_EXPIRY_SECONDS)
-    
+
+    # Invalidate any existing unused OTPs for this phone + purpose
+    OTPRecord.query.filter_by(
+        phone=phone,
+        purpose='trusted_contact_verification',
+        is_used=False
+    ).update({'is_used': True}, synchronize_session=False)
+
     # Create OTP record
     otp_record = OTPRecord(
         phone=phone,
@@ -86,15 +93,22 @@ def add_contact():
     send_status = send_contact_verification_otp(phone, otp_code)
     logger.info(f"OTP sent for trusted contact verification to {phone}: {send_status}")
 
+    resp_data = {
+        "contact_id": new_contact.id,
+        "phone": phone,
+        "otp_sent": send_status not in (None,),
+        "sms_status": send_status,
+        "expires_in_seconds": Config.OTP_EXPIRY_SECONDS
+    }
+    # In development mode expose the OTP so testing is possible without
+    # a working Twilio account (mirrors the pattern used in auth routes).
+    if current_app.debug:
+        resp_data["otp_code"] = otp_code
+
     return jsonify(
-        success=True, 
+        success=True,
         message="OTP sent to contact's phone number",
-        data={
-            "contact_id": new_contact.id,
-            "phone": phone,
-            "otp_sent": True,
-            "expires_in_seconds": Config.OTP_EXPIRY_SECONDS
-        }
+        data=resp_data
     ), 200
 
 
@@ -239,15 +253,22 @@ def resend_contact_otp():
     # Send OTP via Twilio SMS
     send_status = send_contact_verification_otp(contact.phone, otp_code)
     logger.info(f"OTP resent for trusted contact {contact.phone}: {send_status}")
-    
+
+    resp_data = {
+        "contact_id": contact.id,
+        "phone": contact.phone,
+        "sms_status": send_status,
+        "expires_in_seconds": Config.OTP_EXPIRY_SECONDS
+    }
+    # In development mode expose the OTP so testing is possible without
+    # a working Twilio account (mirrors the pattern used in auth routes).
+    if current_app.debug:
+        resp_data["otp_code"] = otp_code
+
     return jsonify(
         success=True,
         message="OTP resent successfully",
-        data={
-            "contact_id": contact.id,
-            "phone": contact.phone,
-            "expires_in_seconds": Config.OTP_EXPIRY_SECONDS
-        }
+        data=resp_data
     ), 200
 
 @contacts_bp.route('/<contact_id>', methods=['PUT'])

@@ -6,7 +6,7 @@ from app.models.sos_alert import SOSAlert
 from app.models.trusted_contact import TrustedContact
 from app.models.user import User
 from app.utils.timezone_utils import format_datetime_for_response, get_timezone_for_country
-from marshmallow import Schema, fields, ValidationError
+from marshmallow import Schema, fields, validate, ValidationError
 
 sos_bp = Blueprint('sos', __name__)
 
@@ -25,10 +25,18 @@ def _serialize_sos_alert(alert, user_country):
         'timezone': timezone_zone
     }
 
+VALID_TRIGGER_TYPES = ["manual", "auto_fall", "auto_shake", "bracelet", "iot_button"]
+
 class SOSTriggerSchema(Schema):
     latitude = fields.Float(load_default=0.0)
     longitude = fields.Float(load_default=0.0)
-    trigger_type = fields.Str(missing='manual')
+    trigger_type = fields.Str(
+        load_default='manual',
+        validate=validate.OneOf(
+            VALID_TRIGGER_TYPES,
+            error="Invalid trigger_type. Must be one of: {choices}"
+        )
+    )
 
 @sos_bp.route('/trigger', methods=['POST'])
 @jwt_required()

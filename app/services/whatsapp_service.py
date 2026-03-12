@@ -20,6 +20,46 @@ _SANDBOX_ERRORS = {
     21614: "not_a_mobile_number", # number can't receive messages
 }
 
+# Human-readable labels for each trigger_type value stored on SOSAlert.
+TRIGGER_TYPE_LABELS = {
+    "manual":    "🔴 Manual SOS (user pressed the SOS button)",
+    "iot_button": "📣 Wearable Button SOS (IoT device triggered)",
+    "auto_fall":  "⚠️ Auto-SOS (fall detected by accelerometer)",
+    "auto_shake": "⚠️ Auto-SOS (unusual motion detected)",
+    "auto":       "⚠️ Auto-SOS (unusual activity detected)",
+    "bracelet":   "🔴 Bracelet SOS",
+}
+
+
+def _build_sos_body(user_name, trigger_type, trigger_reason, maps_link):
+    """Build the structured WhatsApp SOS message body.
+
+    Args:
+        user_name:      Full name of the person in danger.
+        trigger_type:   SOSAlert.trigger_type value.
+        trigger_reason: Short human-readable reason (auto-SOS only, else None).
+        maps_link:      Google Maps URL string, or None if location unavailable.
+
+    Returns:
+        str: Formatted WhatsApp message body.
+    """
+    label = TRIGGER_TYPE_LABELS.get(trigger_type, f"SOS ({trigger_type})")
+    lines = [
+        "🚨 *EMERGENCY ALERT* 🚨",
+        "",
+        f"*{user_name}* needs help!",
+        "",
+        f"*Trigger:* {label}",
+    ]
+    if trigger_reason:
+        lines.append(f"*Reason:* {trigger_reason}")
+    if maps_link:
+        lines += ["", f"📍 *Location:* {maps_link}"]
+    else:
+        lines += ["", "📍 *Location:* Not available"]
+    lines += ["", "Please check on them immediately.", "— Asfalis Safety App"]
+    return "\n".join(lines)
+
 
 def send_whatsapp_sync(to_number, message, app_ctx=None):
     """Send a WhatsApp message synchronously and return a delivery report.

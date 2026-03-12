@@ -19,6 +19,7 @@ class SOSAlert(db.Model):
     sent_at = db.Column(db.DateTime, nullable=True)
     resolved_at = db.Column(db.DateTime, nullable=True)
     resolution_type = db.Column(db.String(50), nullable=True)  # user_marked_safe, cancelled, timeout, manual_resolution
+    trigger_reason = db.Column(db.Text, nullable=True)  # auto-SOS only: short human-readable reason (e.g. "Unusual fall detected")
 
     def to_dict(self):
         return {

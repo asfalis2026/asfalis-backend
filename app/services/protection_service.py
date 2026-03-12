@@ -409,7 +409,8 @@ def analyze_sensor_data(user_id, sensor_type, readings, sensitivity):
             f"Sensor: {sensor_type} | System was armed at time of trigger"
         )
         alert, msg = trigger_sos(user_id, lat, lng, trigger_type=trigger_type,
-                                  trigger_prefix=trigger_prefix)
+                                  trigger_prefix=trigger_prefix,
+                                  trigger_reason=trigger_reason)
         _mark_sos_triggered(user_id)
 
         current_app.logger.warning(
@@ -522,7 +523,8 @@ def predict_from_window(user_id, window_data, sensor_type='accelerometer', locat
             f"Sensor: {sensor_type} | Location: {location} | System was armed"
         )
         alert, msg = trigger_sos(user_id, lat, lng, trigger_type=trigger_type,
-                                  trigger_prefix=trigger_prefix)
+                                  trigger_prefix=trigger_prefix,
+                                  trigger_reason=trigger_reason)
         _mark_sos_triggered(user_id)
 
         current_app.logger.warning(

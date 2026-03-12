@@ -27,7 +27,7 @@ def _get_configured_cooldown():
     except (TypeError, ValueError):
         return None
 
-def trigger_sos(user_id, lat, lng, trigger_type='manual', trigger_prefix=None):
+def trigger_sos(user_id, lat, lng, trigger_type='manual', trigger_prefix=None, trigger_reason=None):
     # Auto-SOS (sensor-based): 10-minute cooldown via _sos_cooldown.
     # Manual SOS: 20-second double-tap guard via _manual_sos_cooldown.
     # IoT button: NO backend cooldown — IotSosTracker on Android owns the
@@ -98,6 +98,7 @@ def trigger_sos(user_id, lat, lng, trigger_type='manual', trigger_prefix=None):
     new_alert = SOSAlert(
         user_id=user_id,
         trigger_type=trigger_type,
+        trigger_reason=trigger_reason,
         latitude=lat,
         longitude=lng,
         status='countdown',
@@ -147,14 +148,18 @@ def dispatch_sos(alert_id, user_id=None):
     alert.status = 'sent'
     alert.sent_at = datetime.utcnow()
 
-    # Generate Google Maps link and message body
-    maps_link = f"https://maps.google.com/?q={alert.latitude},{alert.longitude}"
-    full_message = (
-        f"🚨 EMERGENCY ALERT 🚨\n\n{alert.sos_message}\n\n"
-        f"📍 Location: {maps_link}\n\nSent by Asfalis for {user.full_name}"
+    # Generate Google Maps link and structured message body
+    maps_link = (
+        f"https://maps.google.com/?q={alert.latitude},{alert.longitude}"
+        if (alert.latitude and alert.longitude) else None
     )
-
-    from app.services.whatsapp_service import send_whatsapp_sync
+    from app.services.whatsapp_service import send_whatsapp_sync, _build_sos_body
+    full_message = _build_sos_body(
+        user_name=user.full_name or "Someone",
+        trigger_type=alert.trigger_type,
+        trigger_reason=alert.trigger_reason,
+        maps_link=maps_link,
+    )
 
     contacted = []
     delivery_report = []  # per-contact Twilio delivery status

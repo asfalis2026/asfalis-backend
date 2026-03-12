@@ -27,7 +27,7 @@ def _get_configured_cooldown():
     except (TypeError, ValueError):
         return None
 
-def trigger_sos(user_id, lat, lng, trigger_type='manual'):
+def trigger_sos(user_id, lat, lng, trigger_type='manual', trigger_prefix=None):
     # Auto-SOS (sensor-based): 10-minute cooldown via _sos_cooldown.
     # Manual SOS: 20-second double-tap guard via _manual_sos_cooldown.
     # IoT button: NO backend cooldown — IotSosTracker on Android owns the
@@ -88,8 +88,12 @@ def trigger_sos(user_id, lat, lng, trigger_type='manual'):
         start_message = user.sos_message
     elif user.settings and user.settings.sos_message:
         start_message = user.settings.sos_message
-    
-    sos_message = start_message
+
+    # Auto-SOS paths pass a trigger_prefix (reason + confidence) that is
+    # prepended to the user's normal SOS message.  This surfaces in the
+    # WhatsApp notification so contacts and the user know exactly what
+    # triggered the alert.
+    sos_message = f"{trigger_prefix}\n\n{start_message}" if trigger_prefix else start_message
 
     new_alert = SOSAlert(
         user_id=user_id,

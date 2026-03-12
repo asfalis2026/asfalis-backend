@@ -5,45 +5,78 @@ import numpy as np
 import joblib
 from flask import current_app
 
-from app.services.sos_service import trigger_sos
+from app.services.sos_service import trigger_sos, dispatch_sos
 
 # ---------------------------------------------------------------------------
 # Model loading (once at import time)
 # ---------------------------------------------------------------------------
 _MODEL_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'model.pkl')
 _model = None
+_model_db_id = None  # DB row ID of the loaded model; None = file fallback / not loaded yet
 
 def _get_model():
-    """Lazy-load the ML model from the Database (or fallback to file)."""
-    global _model
+    """Lazy-load the ML model from the Database (or fallback to file).
+
+    Tracks the active DB model row ID so the cache is automatically
+    invalidated when a new model is trained.  Call ``_reset_model_cache()``
+    after training to force an immediate reload on the next request.
+    """
+    global _model, _model_db_id
     if _model is None:
         try:
             # Try loading from DB first
             from app.models.ml_model import MLModel
             from app.extensions import db
             import io
-            
-            # Need app context if running outside request (e.g. tests)
-            # But usually this is called within a request or background task
+
             active_model = MLModel.query.filter_by(is_active=True).order_by(MLModel.created_at.desc()).first()
-            
+
             if active_model:
                 with io.BytesIO(active_model.data) as f:
                     _model = joblib.load(f)
-                print(f"✅ Loaded ML model {active_model.version} from DB")
+                _model_db_id = active_model.id
+                print(f"✅ Loaded ML model {active_model.version} from DB (id={active_model.id})")
                 return _model
-            
-            # Fallback to file if no DB model
+
+            # Fallback to file if no DB model (not yet calibrated)
             if os.path.exists(_MODEL_PATH):
                 _model = joblib.load(_MODEL_PATH)
+                _model_db_id = None  # Signals "file-based / uncalibrated"
                 print(f"⚠️ Loaded fallback model from {_MODEL_PATH}")
             else:
                 print("❌ No active model found in DB or file.")
-                
+
         except Exception as e:
             print(f"❌ Failed to load model: {e}")
-            
+
     return _model
+
+
+def _reset_model_cache():
+    """Invalidate the in-process ML model cache.
+
+    Must be called after a new model is successfully saved to the DB so that
+    the next prediction request loads the freshly calibrated model instead of
+    the stale cached one.  Without this, a running server process would keep
+    using the old model until it is restarted.
+    """
+    global _model, _model_db_id
+    _model = None
+    _model_db_id = None
+    print("🔄 ML model cache invalidated — will reload from DB on next prediction.")
+
+
+def _has_db_model():
+    """Return True if the currently cached model came from the DB.
+
+    Used to block auto-SOS triggers when only the uncalibrated file-fallback
+    model is loaded.  A file-based model was not trained on the user's sensor
+    data and will produce unreliable predictions, especially during or just
+    after device calibration.
+    """
+    # Force a load attempt so the flag is accurate even on the first call.
+    _get_model()
+    return _model_db_id is not None
 
 
 # ---------------------------------------------------------------------------
@@ -208,23 +241,30 @@ def toggle_protection(user_id, is_active):
 
     Persists the flag to ``user_settings.auto_sos_enabled`` so the preference
     survives server restarts.  The in-memory ``active_protection_users`` cache
-    is updated simultaneously so subsequent requests within the same process
-    are still O(1).
+    is updated **only after** the DB write succeeds, so the process state
+    and the DB state cannot diverge (which would cause false-armed behaviour
+    after a restart).
     """
     from app.models.settings import UserSettings
     from app.extensions import db
 
-    # Persist to DB
+    # Create the settings row if it doesn't exist yet (e.g. fresh account).
     settings = UserSettings.query.filter_by(user_id=user_id).first()
-    if settings:
-        settings.auto_sos_enabled = is_active
-        try:
-            db.session.commit()
-        except Exception as e:
-            db.session.rollback()
-            print(f"⚠️ Failed to persist protection toggle: {e}")
+    if not settings:
+        settings = UserSettings(user_id=user_id)
+        db.session.add(settings)
 
-    # Keep in-memory cache in sync
+    settings.auto_sos_enabled = is_active
+    try:
+        db.session.commit()
+    except Exception as e:
+        db.session.rollback()
+        # Do NOT update the in-memory cache when the DB write fails.
+        # Leaving the cache unchanged keeps it consistent with the DB so the
+        # protection state is predictable after a server restart.
+        return False, f"Failed to update protection state: {e}"
+
+    # Cache update only reaches here on DB success.
     if is_active:
         active_protection_users[user_id] = True
         return True, "Auto SOS protection activated"
@@ -313,6 +353,33 @@ def analyze_sensor_data(user_id, sensor_type, readings, sensitivity):
         print(f"⚠️ Failed to auto-save training data: {e}")
 
     if is_danger:
+        # Block auto-SOS when only the uncalibrated file-fallback model is
+        # loaded.  Only a DB-trained model (produced by /protection/train-model
+        # on real user data) is reliable enough to trigger an emergency alert.
+        if not _has_db_model():
+            current_app.logger.warning(
+                f"Auto SOS blocked for user {user_id}: no calibrated DB model. "
+                "Complete calibration and run /protection/train-model first."
+            )
+            return {
+                "alert_triggered": False,
+                "confidence": confidence_danger,
+                "message": "Auto SOS suspended: model not calibrated. Complete calibration first.",
+                "trigger_reason": "model_not_calibrated"
+            }
+
+        # Fresh DB check — guards against race conditions where the user
+        # disarmed between the top-of-function cache check and here.
+        from app.models.settings import UserSettings
+        fresh_settings = UserSettings.query.filter_by(user_id=user_id).first()
+        if not (fresh_settings and fresh_settings.auto_sos_enabled):
+            current_app.logger.info(
+                f"Auto SOS suppressed for user {user_id}: "
+                "system disarmed (fresh DB check caught race with cache)."
+            )
+            return {"alert_triggered": False, "confidence": confidence_danger,
+                    "message": "Auto SOS suppressed: system is disarmed."}
+
         # Check cooldown before triggering SOS
         on_cooldown, secs_left = _is_on_cooldown(user_id)
         if on_cooldown:
@@ -324,40 +391,45 @@ def analyze_sensor_data(user_id, sensor_type, readings, sensitivity):
                 "retry_after_seconds": secs_left
             }
 
-        # Trigger SOS
+        # Resolve GPS coordinates
         from app.services.location_service import get_last_location
         last_loc = get_last_location(user_id)
         lat = last_loc.latitude if last_loc else 0.0
         lng = last_loc.longitude if last_loc else 0.0
 
         trigger_type = SENSOR_TRIGGER_MAP.get(sensor_type, "auto_fall")
-        alert, msg = trigger_sos(user_id, lat, lng, trigger_type=trigger_type)
+        trigger_reason = (
+            "Unusual fall detected" if sensor_type == "accelerometer"
+            else "Unusual shake/motion detected"
+        )
+        # Embed the trigger reason in the alert's SOS message so it appears
+        # in the WhatsApp notification when dispatch_sos is called.
+        trigger_prefix = (
+            f"⚠️ AUTO-SOS: {trigger_reason} ({int(confidence_danger * 100)}% confidence)\\n"
+            f"Sensor: {sensor_type} | System was armed at time of trigger"
+        )
+        alert, msg = trigger_sos(user_id, lat, lng, trigger_type=trigger_type,
+                                  trigger_prefix=trigger_prefix)
         _mark_sos_triggered(user_id)
 
-        # Send WhatsApp alert (sync so we can capture sandbox errors)
-        try:
-            from app.services.whatsapp_service import send_whatsapp_sync
-            from app.models.trusted_contact import TrustedContact
-            contacts = TrustedContact.query.filter_by(user_id=user_id).all()
-            maps_link = f"https://maps.google.com/?q={lat},{lng}"
-            whatsapp_msg = f"⚠ SOS ALERT!\nDanger detected via {sensor_type}!\nConfidence: {int(confidence_danger*100)}%\n📍 Location: {maps_link}"
-            delivery_report = []
-            for contact in contacts:
-                result = send_whatsapp_sync(contact.phone, whatsapp_msg)
-                delivery_report.append({"phone": contact.phone, **result})
-                if not result["success"]:
-                    current_app.logger.warning(
-                        f"Auto SOS WhatsApp failed for {contact.phone} "
-                        f"[{result['status']}] code={result['error_code']}: {result['error_msg']}"
-                    )
-        except Exception as e:
-            current_app.logger.error(f"WhatsApp alert failed: {e}")
-            delivery_report = []
+        current_app.logger.warning(
+            f"Auto SOS triggered for user {user_id}: {trigger_reason} "
+            f"confidence={confidence_danger:.2f} sensor={sensor_type}"
+        )
+
+        # Dispatch immediately via the standard dispatch_sos path so that:
+        # 1. Alert status transitions countdown -> sent (visible correctly in history)
+        # 2. WhatsApp body includes the trigger reason (via trigger_prefix in sos_message)
+        # 3. Delivery errors are captured in delivery_report
+        delivery_report = []
+        if alert:
+            _, _, delivery_report = dispatch_sos(alert.id, user_id)
 
         return {
             "alert_triggered": True,
             "alert_id": alert.id if alert else None,
             "confidence": confidence_danger,
+            "trigger_reason": trigger_reason,
             "delivery_report": delivery_report
         }
 
@@ -397,6 +469,29 @@ def predict_from_window(user_id, window_data, sensor_type='accelerometer', locat
     response = {"prediction": prediction, "confidence": confidence, "sensor_type": sensor_type}
 
     if prediction == 1:
+        # Block auto-SOS when only the uncalibrated file-fallback model is loaded.
+        if not _has_db_model():
+            current_app.logger.warning(
+                f"Auto SOS (predict) blocked for user {user_id}: no calibrated DB model."
+            )
+            response["sos_sent"] = False
+            response["message"] = "Auto SOS suspended: model not calibrated. Complete calibration first."
+            response["trigger_reason"] = "model_not_calibrated"
+            return response
+
+        # Fresh DB check — guards against the user disarming between the
+        # top-of-function cache check and this point (race condition).
+        from app.models.settings import UserSettings
+        fresh_settings = UserSettings.query.filter_by(user_id=user_id).first()
+        if not (fresh_settings and fresh_settings.auto_sos_enabled):
+            current_app.logger.info(
+                f"Auto SOS (predict) suppressed for user {user_id}: "
+                "system disarmed (fresh DB check)."
+            )
+            response["sos_sent"] = False
+            response["message"] = "Auto SOS suppressed: system is disarmed."
+            return response
+
         # Check cooldown
         on_cooldown, secs_left = _is_on_cooldown(user_id)
         if on_cooldown:
@@ -416,37 +511,37 @@ def predict_from_window(user_id, window_data, sensor_type='accelerometer', locat
             lng = last_loc.longitude if last_loc else 0.0
 
         trigger_type = SENSOR_TRIGGER_MAP.get(sensor_type, "auto_fall")
-        alert, msg = trigger_sos(user_id, lat, lng, trigger_type=trigger_type)
+        trigger_reason = (
+            "Unusual fall detected" if sensor_type == "accelerometer"
+            else "Unusual shake/motion detected"
+        )
+        # Embed the trigger reason in the alert's SOS message so it appears
+        # in the WhatsApp notification when /send-now -> dispatch_sos fires.
+        trigger_prefix = (
+            f"⚠️ AUTO-SOS: {trigger_reason} ({int(confidence * 100)}% confidence)\\n"
+            f"Sensor: {sensor_type} | Location: {location} | System was armed"
+        )
+        alert, msg = trigger_sos(user_id, lat, lng, trigger_type=trigger_type,
+                                  trigger_prefix=trigger_prefix)
         _mark_sos_triggered(user_id)
 
-        # Send WhatsApp alert (sync so we can capture sandbox errors)
-        try:
-            from app.services.whatsapp_service import send_whatsapp_sync
-            from app.models.trusted_contact import TrustedContact
-            contacts = TrustedContact.query.filter_by(user_id=user_id).all()
-            maps_link = f"https://maps.google.com/?q={lat},{lng}"
-            whatsapp_msg = (
-                f"⚠ SOS ALERT!\nDanger detected via {sensor_type}!\n"
-                f"Confidence: {int(confidence*100)}%\n"
-                f"📍 Location: {location}\n🗺 Map: {maps_link}"
-            )
-            delivery_report = []
-            for contact in contacts:
-                result = send_whatsapp_sync(contact.phone, whatsapp_msg)
-                delivery_report.append({"phone": contact.phone, **result})
-                if not result["success"]:
-                    current_app.logger.warning(
-                        f"Auto SOS WhatsApp failed for {contact.phone} "
-                        f"[{result['status']}] code={result['error_code']}: {result['error_msg']}"
-                    )
-        except Exception as e:
-            current_app.logger.error(f"WhatsApp alert failed: {e}")
-            delivery_report = []
+        current_app.logger.warning(
+            f"Auto SOS (predict) countdown started for user {user_id}: "
+            f"{trigger_reason} confidence={confidence:.2f} sensor={sensor_type}"
+        )
 
+        # Do NOT dispatch (send WhatsApp) here.
+        # The frontend receives the alert_id and shows a cancellation countdown.
+        # If not cancelled, the frontend calls /sos/send-now which invokes
+        # dispatch_sos — this ensures:
+        #   • Alert status correctly transitions countdown -> sent in history
+        #   • WhatsApp body includes the trigger reason (stored in sos_message)
+        #   • No double-dispatch (contacts previously received TWO messages)
         response["sos_sent"] = True
         response["alert_id"] = alert.id if alert else None
         response["message"] = msg
-        response["delivery_report"] = delivery_report
+        response["trigger_reason"] = trigger_reason
+        response["countdown_seconds"] = current_app.config.get("SOS_COUNTDOWN_SECONDS", 10)
 
     else:
         response["sos_sent"] = False

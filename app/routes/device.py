@@ -52,6 +52,10 @@ def register_device():
         device.user_id = current_user_id
         device.is_connected = True
         device.last_seen = datetime.utcnow()
+        # Clear stale button-press timestamp so a re-connection within 1.5 s
+        # of the previous disconnect is NOT treated as a double-tap, which
+        # would cancel the first real SOS press after reconnect.
+        device.last_button_press_at = None
     else:
         device = ConnectedDevice(
             user_id=current_user_id,

@@ -239,8 +239,14 @@ def train_model():
                 )
                 db.session.add(new_model)
                 db.session.commit()
-                
-                logger.info(f"💾 Model {version} saved with accuracy {accuracy:.4f}")
+
+                # Invalidate the in-memory model cache so the running server
+                # immediately starts using this newly trained DB model instead
+                # of the stale cached model (or the uncalibrated file fallback).
+                from app.services.protection_service import _reset_model_cache
+                _reset_model_cache()
+
+                logger.info(f"💾 Model {version} saved with accuracy {accuracy:.4f} — cache invalidated.")
                 
             except Exception as e:
                 logger.error(f"❌ Training failed: {str(e)}")

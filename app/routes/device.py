@@ -4,7 +4,7 @@ from flask_jwt_extended import jwt_required, get_jwt_identity
 from app.models.device import ConnectedDevice
 from app.models.sos_alert import SOSAlert
 from app.extensions import db
-from marshmallow import Schema, fields, ValidationError
+from marshmallow import Schema, fields, ValidationError, EXCLUDE
 from datetime import datetime
 from app.services.sos_service import trigger_sos
 
@@ -17,12 +17,18 @@ device_bp = Blueprint('device', __name__)
 class DeviceRegisterSchema(Schema):
     device_name = fields.Str(required=True)
     device_mac = fields.Str(required=True)
-    firmware_version = fields.Str(allow_none=True)
+    firmware_version = fields.Str(allow_none=True, load_default=None)
+
+    class Meta:
+        unknown = EXCLUDE
 
 class ButtonEventSchema(Schema):
     device_mac = fields.Str(required=True)
     latitude  = fields.Float(load_default=0.0)
     longitude = fields.Float(load_default=0.0)
+
+    class Meta:
+        unknown = EXCLUDE
 
 # ---------------------------------------------------------------------------
 # Endpoints
@@ -66,9 +72,11 @@ def get_device_status():
     current_user_id = get_jwt_identity()
     # Get the most recently paired/seen device
     device = ConnectedDevice.query.filter_by(user_id=current_user_id).order_by(ConnectedDevice.last_seen.desc()).first()
-    
+
+    # Return data:null (not 404) when no device is paired — the app checks
+    # response.isSuccessful and reads data, so a 404 would be treated as an error.
     if not device:
-        return jsonify(success=False, error={"code": "NOT_FOUND", "message": "No specific device linked"}), 404
+        return jsonify(success=True, data=None), 200
 
     return jsonify(success=True, data=device.to_dict()), 200
 
@@ -81,11 +89,12 @@ def update_device_status(device_id):
     if not device:
         return jsonify(success=False, error={"code": "NOT_FOUND", "message": "Device not found"}), 404
 
-    data = request.json
+    data = request.json or {}
     if 'is_connected' in data:
         device.is_connected = data['is_connected']
-        if device.is_connected:
-            device.last_seen = datetime.utcnow()
+    # Always update last_seen — this call is made on both connect and disconnect,
+    # and records the last time the backend heard about this device's state.
+    device.last_seen = datetime.utcnow()
 
     db.session.commit()
     return jsonify(success=True, data=device.to_dict()), 200

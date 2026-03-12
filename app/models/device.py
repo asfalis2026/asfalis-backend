@@ -23,9 +23,11 @@ class ConnectedDevice(db.Model):
         return {
             'device_id': self.id,
             'device_name': self.device_name,
+            'device_mac': self.device_mac,
             'is_connected': self.is_connected,
             'battery_level': self.battery_level,
             'firmware_version': self.firmware_version,
+            'signal_strength': None,   # reserved for future RSSI reporting
             'last_seen': self.last_seen.isoformat() if self.last_seen else None,
             'last_button_press_at': self.last_button_press_at.isoformat() if self.last_button_press_at else None
         }

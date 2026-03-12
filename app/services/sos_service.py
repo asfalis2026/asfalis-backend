@@ -30,9 +30,14 @@ def _get_configured_cooldown():
 def trigger_sos(user_id, lat, lng, trigger_type='manual'):
     # Auto-SOS (sensor-based): 10-minute cooldown via _sos_cooldown.
     # Manual SOS: 20-second double-tap guard via _manual_sos_cooldown.
-    # The two stores are completely independent — a manual SOS never
+    # IoT button: NO backend cooldown — IotSosTracker on Android owns the
+    # 10-minute hardware cooldown entirely.  Applying a second in-process
+    # cooldown here would block re-triggering after a cancel and make the
+    # IoT device unresponsive for up to 20 seconds.
+    # The two cooldown stores are otherwise independent — a manual SOS never
     # blocks an auto-SOS and an auto-SOS never blocks a manual one.
     is_auto = trigger_type.startswith('auto')
+    is_iot  = trigger_type == 'iot_button'
 
     if is_auto:
         from app.services.protection_service import (
@@ -40,6 +45,11 @@ def trigger_sos(user_id, lat, lng, trigger_type='manual'):
         )
         on_cooldown, secs_left = _is_on_cooldown(user_id)
         mark_triggered = lambda: _mark_sos_triggered(user_id)
+    elif is_iot:
+        # Hardware cooldown is enforced by IotSosTracker (Android side).
+        # Backend applies no additional rate-limit for iot_button.
+        on_cooldown, secs_left = False, 0
+        mark_triggered = lambda: None  # no-op
     else:
         from app.services.protection_service import (
             _is_manual_on_cooldown, _mark_manual_sos_triggered
@@ -104,19 +114,19 @@ def trigger_sos(user_id, lat, lng, trigger_type='manual'):
 def dispatch_sos(alert_id, user_id=None):
     alert = SOSAlert.query.get(alert_id)
     if not alert:
-        return False, "Alert not found"
+        return False, "Alert not found", []
 
     if user_id and alert.user_id != user_id:
-        return False, "Unauthorized: This alert does not belong to you"
-    
+        return False, "Unauthorized: This alert does not belong to you", []
+
     if alert.status in ['resolved', 'cancelled']:
-        return False, "Alert already resolved/cancelled"
+        return False, "Alert already resolved/cancelled", []
 
     if alert.status == 'sent':
-        return True, "SOS already dispatched"
+        return True, "SOS already dispatched", []
 
     if alert.status != 'countdown':
-        return False, f"Alert cannot be dispatched from state: {alert.status}"
+        return False, f"Alert cannot be dispatched from state: {alert.status}", []
 
     user = User.query.get(alert.user_id)
     contacts = TrustedContact.query.filter_by(user_id=user.id).all()
@@ -187,14 +197,24 @@ def cancel_sos(alert_id, user_id=None):
     if user_id and alert.user_id != user_id:
         return False, "Unauthorized: This alert does not belong to you"
 
-    if alert.status == 'sent':
-         # If already sent, we might want to send a "Safe now" message
-         pass
+    if alert.status in ('cancelled', 'resolved'):
+        return False, f"This alert has already been resolved (status: {alert.status})"
 
     alert.status = 'cancelled'
     alert.resolved_at = datetime.utcnow()
     alert.resolution_type = 'cancelled'
     db.session.commit()
+
+    # Clear the in-process manual cooldown so the user (or IoT device) can
+    # re-trigger immediately after a cancel without hitting the 20-second
+    # double-tap guard.  This is a no-op when user_id is None.
+    if user_id:
+        try:
+            from app.services.protection_service import _clear_manual_cooldown
+            _clear_manual_cooldown(user_id)
+        except Exception:
+            pass  # Never let a cooldown-clear failure abort a successful cancel
+
     return True, "SOS Cancelled"
 
 
@@ -223,18 +243,22 @@ def mark_user_safe(alert_id, user_id):
     if alert.status in ['cancelled', 'resolved']:
         return False, f"This alert has already been resolved (status: {alert.status})", 0
     
-    # If status is 'safe', return success but indicate already marked
+    # Idempotency guard: user already marked safe after a dispatched SOS —
+    # return success so the app doesn't show an error on a double-tap.
     if alert.resolution_type == 'user_marked_safe':
         return True, "Alert already marked as safe", 0
     
-    # State transition rules for false alarms:
-    # - countdown -> cancelled (no contacts were notified)
-    # - sent -> cancelled (safe update should notify contacts)
+    # State transition rules:
+    # - countdown -> cancelled, resolution_type='false_alarm'
+    #   (SOS was never dispatched; no contacts to notify)
+    # - sent -> cancelled, resolution_type='user_marked_safe'
+    #   (SOS was dispatched; safe message must go out to contacts)
     notify_contacts = alert.status == 'sent'
+    resolution = 'user_marked_safe' if notify_contacts else 'false_alarm'
 
     alert.status = 'cancelled'
     alert.resolved_at = datetime.utcnow()
-    alert.resolution_type = 'false_alarm'
+    alert.resolution_type = resolution
     db.session.commit()
     
     # Get user and verified contacts

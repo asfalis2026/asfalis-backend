@@ -106,6 +106,15 @@ def _mark_manual_sos_triggered(user_id):
     _manual_sos_cooldown[user_id] = time.time()
 
 
+def _clear_manual_cooldown(user_id):
+    """Clear the manual SOS cooldown for a user.
+
+    Called after a successful cancel so the user (or IoT device) can
+    re-trigger immediately without hitting the 20-second double-tap guard.
+    """
+    _manual_sos_cooldown.pop(user_id, None)
+
+
 # ---------------------------------------------------------------------------
 # Feature extraction (mirrors data_train.py exactly)
 # ---------------------------------------------------------------------------

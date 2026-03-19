@@ -28,7 +28,8 @@ CSV_FILES = [
 
 FEATURE_WINDOW_SIZE = 40
 SENSOR_TYPE = "accelerometer"
-MODEL_PATH = os.path.join(PROJECT_ROOT, "model.pkl")
+MODEL_PATH = os.path.join(PROJECT_ROOT, "auto_sos_model_LightGBM.pkl")
+SCALER_PATH = os.path.join(PROJECT_ROOT, "auto_sos_scaler.pkl")
 
 FEATURE_NAMES = [
     "mean_x", "mean_y", "mean_z",
@@ -108,6 +109,14 @@ def generate_report():
         print("Model file not found.")
         return
     model = joblib.load(MODEL_PATH)
+
+    # Load scaler
+    scaler = None
+    if os.path.exists(SCALER_PATH):
+        scaler = joblib.load(SCALER_PATH)
+        print(f"✅ Loaded scaler from {SCALER_PATH}")
+    else:
+        print(f"⚠️ Scaler not found at {SCALER_PATH}, predictions will use unscaled features.")
     
     # Data Loading
     csv_X, csv_y = [], []
@@ -130,6 +139,11 @@ def generate_report():
         
     X = np.vstack(all_X)
     y_true = np.concatenate(csv_y + ([y_db] if y_db.shape[0] > 0 else []))
+
+    # Apply scaler if available
+    if scaler is not None:
+        X = scaler.transform(X)
+
     y_pred = model.predict(X)
     
     # Metrics

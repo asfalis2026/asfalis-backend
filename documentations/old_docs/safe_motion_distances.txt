@@ -1,0 +1,65 @@
+Total Groups Processed: 57 (40 points per group)
+Total Outliers Removed: 5
+
+--- GROUP-WISE MEAN DISTANCES ---
+Group 001: 0.019494
+Group 002: 0.029702
+Group 003: 0.028497
+Group 004: 0.022766
+Group 005: 0.027843
+Group 006: 0.017759
+Group 007: 0.014391
+Group 008: 0.018751
+Group 009: 0.018156
+Group 010: 0.017451
+Group 011: 0.018318
+Group 012: 0.022849
+Group 013: 0.010169
+Group 014: 0.014341
+Group 015: 0.011567
+Group 016: 0.029554
+Group 017: 0.011113
+Group 018: 0.011558
+Group 019: 0.012221
+Group 020: 0.012748
+Group 021: 0.011346
+Group 022: 0.010609
+Group 023: 0.010358
+Group 024: 0.010928
+Group 025: 0.009580
+Group 026: 0.007355
+Group 027: 0.010840
+Group 028: 0.010749
+Group 029: 0.019873
+Group 030: 0.005381
+Group 031: 0.013697
+Group 032: 0.013705
+Group 033: 0.015968
+Group 034: 0.010564
+Group 035: 0.012192
+Group 036: 0.008733
+Group 037: 0.017512
+Group 038: 0.012656
+Group 039: 0.011006
+Group 040: 0.013752
+Group 041: 0.015608
+Group 042: 0.010955
+Group 043: 0.011738
+Group 044: 0.011924
+Group 045: 0.018332
+Group 046: 0.010696
+Group 047: 0.010635
+Group 048: 0.007299
+Group 049: 0.039545 (OUTLIER - REMOVED)
+Group 050: 0.037201 (OUTLIER - REMOVED)
+Group 051: 0.045412 (OUTLIER - REMOVED)
+Group 052: 0.019595
+Group 053: 0.024321
+Group 054: 0.015630
+Group 055: 0.029379
+Group 056: 0.039934 (OUTLIER - REMOVED)
+Group 057: 0.035048 (OUTLIER - REMOVED)
+
+==================================================
+FINAL AVERAGE DISTANCE (excluding outliers): 0.015234
+==================================================

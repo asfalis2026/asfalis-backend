@@ -27,7 +27,8 @@ CSV_FILES = [
 
 FEATURE_WINDOW_SIZE = 40
 SENSOR_TYPE = "accelerometer"
-MODEL_PATH = os.path.join(PROJECT_ROOT, "model.pkl")
+MODEL_PATH = os.path.join(PROJECT_ROOT, "auto_sos_model_LightGBM.pkl")
+SCALER_PATH = os.path.join(PROJECT_ROOT, "auto_sos_scaler.pkl")
 
 def load_csv(file_cfg: dict) -> pd.DataFrame:
     path = file_cfg["path"]
@@ -116,6 +117,14 @@ def generate_matrix():
         return
     model = joblib.load(MODEL_PATH)
 
+    # Load scaler
+    scaler = None
+    if os.path.exists(SCALER_PATH):
+        scaler = joblib.load(SCALER_PATH)
+        print(f"✅ Loaded scaler from {SCALER_PATH}")
+    else:
+        print(f"⚠️ Scaler not found at {SCALER_PATH}, predictions will use unscaled features.")
+
     all_X, all_y = [], []
 
     print("Loading data from CSVs...")
@@ -140,6 +149,10 @@ def generate_matrix():
     X = np.vstack(all_X)
     y_true = np.concatenate(all_y)
     
+    # Apply scaler if available
+    if scaler is not None:
+        X = scaler.transform(X)
+
     print(f"Generating predictions for {len(X)} windows...")
     y_pred = model.predict(X)
     

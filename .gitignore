@@ -156,5 +156,6 @@ PROJECT_GUIDE.md
 BACKEND_SESSION_REQUIREMENTS.md
 FRONTEND_INTEGRATION_GUIDE.md
 test_email_local.py
-/documentations
-/data_visualisation
+
+# /documentations
+# /data_visualisation

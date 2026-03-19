@@ -10,9 +10,23 @@ from app.services.sos_service import trigger_sos, dispatch_sos
 # ---------------------------------------------------------------------------
 # Model loading (once at import time)
 # ---------------------------------------------------------------------------
-_MODEL_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'model.pkl')
+_MODEL_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'auto_sos_model_LightGBM.pkl')
+_SCALER_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'auto_sos_scaler.pkl')
 _model = None
+_scaler = None
 _model_db_id = None  # DB row ID of the loaded model; None = file fallback / not loaded yet
+
+def _load_scaler():
+    """Lazy-load the StandardScaler used for feature normalization."""
+    global _scaler
+    if _scaler is None:
+        if os.path.exists(_SCALER_PATH):
+            _scaler = joblib.load(_SCALER_PATH)
+            print(f"✅ Loaded scaler from {_SCALER_PATH}")
+        else:
+            print(f"⚠️ Scaler file not found at {_SCALER_PATH} — features will NOT be scaled.")
+    return _scaler
+
 
 def _get_model():
     """Lazy-load the ML model from the Database (or fallback to file).
@@ -36,6 +50,8 @@ def _get_model():
                     _model = joblib.load(f)
                 _model_db_id = active_model.id
                 print(f"✅ Loaded ML model {active_model.version} from DB (id={active_model.id})")
+                # Also load the scaler
+                _load_scaler()
                 return _model
 
             # Fallback to file if no DB model (not yet calibrated)
@@ -45,6 +61,9 @@ def _get_model():
                 print(f"⚠️ Loaded fallback model from {_MODEL_PATH}")
             else:
                 print("❌ No active model found in DB or file.")
+
+            # Load the scaler regardless of model source
+            _load_scaler()
 
         except Exception as e:
             print(f"❌ Failed to load model: {e}")
@@ -60,8 +79,9 @@ def _reset_model_cache():
     the stale cached one.  Without this, a running server process would keep
     using the old model until it is restarted.
     """
-    global _model, _model_db_id
+    global _model, _scaler, _model_db_id
     _model = None
+    _scaler = None
     _model_db_id = None
     print("🔄 ML model cache invalidated — will reload from DB on next prediction.")
 
@@ -216,6 +236,13 @@ def predict_danger(window_data, sensor_type='accelerometer'):
     expected_n = getattr(model, 'n_features_in_', None)
     if expected_n is not None and features.shape[1] != expected_n:
         features = features[:, :expected_n]
+
+    # ---------------------------------------------------------------------------
+    # Apply StandardScaler normalization (required by LightGBM model)
+    # ---------------------------------------------------------------------------
+    scaler = _load_scaler()
+    if scaler is not None:
+        features = scaler.transform(features)
 
     # Get probability if the model supports it
     confidence = 0.0

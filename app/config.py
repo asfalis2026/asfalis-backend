@@ -3,6 +3,8 @@ import os
 from datetime import timedelta
 
 class Config:
+    DEBUG = os.environ.get('DEBUG', 'false').lower() == 'true'
+
     SECRET_KEY = os.environ.get('SECRET_KEY') or 'dev-secret-key'
     SQLALCHEMY_DATABASE_URI = os.environ.get('DATABASE_URL') or 'sqlite:///Asfalis.db'
     SQLALCHEMY_TRACK_MODIFICATIONS = False
@@ -50,3 +52,11 @@ class Config:
     # Two button-press events received within this many seconds = cancel SOS.
     # A single press outside this window = trigger SOS countdown.
     IOT_DOUBLE_TAP_WINDOW_SECONDS = float(os.environ.get('IOT_DOUBLE_TAP_WINDOW_SECONDS', 1.5))
+    LOG_LEVEL = os.environ.get('LOG_LEVEL', 'INFO').upper()
+
+
+# Module-level singleton so services can do:
+#   from app.config import settings
+#   account_sid = settings.TWILIO_ACCOUNT_SID
+# instead of current_app.config.get('TWILIO_ACCOUNT_SID')
+settings = Config

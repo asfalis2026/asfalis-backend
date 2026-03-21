@@ -1,17 +1,19 @@
-
-from app.extensions import db
+from sqlalchemy import Column, String, Text, DateTime, Enum, ForeignKey
 from datetime import datetime
 import uuid
 
-class SupportTicket(db.Model):
+from app.database import Base
+
+
+class SupportTicket(Base):
     __tablename__ = 'support_tickets'
 
-    id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
-    user_id = db.Column(db.String(36), db.ForeignKey('users.id'), nullable=False)
-    subject = db.Column(db.String(255), nullable=False)
-    message = db.Column(db.Text, nullable=False)
-    status = db.Column(db.Enum('open', 'in_progress', 'resolved', name='ticket_status_enum'), default='open')
-    created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_id = Column(String(36), ForeignKey('users.id'), nullable=False)
+    subject = Column(String(255), nullable=False)
+    message = Column(Text, nullable=False)
+    status = Column(Enum('open', 'in_progress', 'resolved', name='ticket_status_enum'), default='open')
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
 
     def to_dict(self):
         return {

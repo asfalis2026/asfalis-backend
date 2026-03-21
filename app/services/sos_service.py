@@ -1,10 +1,9 @@
-from flask import current_app
-
+from app.config import settings
 from app.extensions import db
 from app.models.sos_alert import SOSAlert
 from app.models.trusted_contact import TrustedContact
 from app.models.user import User
-from app.services.fcm_service import send_push_notification 
+from app.services.fcm_service import send_push_notification
 from app.utils.timezone_utils import format_datetime_for_display
 from datetime import datetime
 import logging
@@ -13,15 +12,10 @@ COUNTDOWN_EXPIRY_SECONDS = 60  # Auto-expire stale countdown alerts after 60s
 
 
 def _get_configured_cooldown():
-    """Fetch SOS cooldown override from app config if available."""
-    try:
-        value = current_app.config.get('SOS_COOLDOWN_SECONDS')
-    except RuntimeError:
-        return None
-
+    """Fetch SOS cooldown from settings."""
+    value = getattr(settings, 'SOS_COOLDOWN_SECONDS', None)
     if value is None:
         return None
-
     try:
         return int(value)
     except (TypeError, ValueError):

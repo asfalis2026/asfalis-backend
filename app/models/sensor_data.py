@@ -1,28 +1,28 @@
-
-from app.extensions import db
+from sqlalchemy import Column, String, Float, Integer, Boolean, DateTime, BigInteger, ForeignKey
 from datetime import datetime
 import uuid
 
-class SensorTrainingData(db.Model):
+from app.database import Base
+
+
+class SensorTrainingData(Base):
     __tablename__ = 'sensor_training_data'
 
-    id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
-    user_id = db.Column(db.String(36), db.ForeignKey('users.id'), nullable=False)
-    timestamp = db.Column(db.BigInteger, nullable=False) # Unix timestamp (ms)
-    
-    # Sensor readings
-    x = db.Column(db.Float, nullable=False)
-    y = db.Column(db.Float, nullable=False)
-    z = db.Column(db.Float, nullable=False)
-    
-    sensor_type = db.Column(db.String(20), nullable=False) # 'accelerometer', 'gyroscope'
-    
-    # Labels for RL/Training
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_id = Column(String(36), ForeignKey('users.id'), nullable=False)
+    timestamp = Column(BigInteger, nullable=False)  # Unix timestamp (ms)
+
+    x = Column(Float, nullable=False)
+    y = Column(Float, nullable=False)
+    z = Column(Float, nullable=False)
+
+    sensor_type = Column(String(20), nullable=False)  # 'accelerometer', 'gyroscope'
+
     # 0 = Safe/False Positive, 1 = Danger/True Positive
-    label = db.Column(db.Integer, nullable=False) 
-    
-    is_verified = db.Column(db.Boolean, default=False) # True if manually provided/corrected by user
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    label = Column(Integer, nullable=False)
+
+    is_verified = Column(Boolean, default=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
 
     def to_dict(self):
         return {

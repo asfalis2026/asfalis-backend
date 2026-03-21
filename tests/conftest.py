@@ -1,42 +1,32 @@
+"""FastAPI test configuration — replaces Flask test_client with httpx TestClient."""
+
 import pytest
-import json
 import os
 
-# Set testing environment before importing app to avoid eventlet issues
-os.environ['FLASK_TESTING'] = 'True'
+os.environ['FLASK_TESTING'] = 'False'  # no longer needed
+os.environ['DATABASE_URL'] = 'sqlite:///test_asfalis.db'
+os.environ['JWT_SECRET_KEY'] = 'test-jwt-secret'
+os.environ['SECRET_KEY'] = 'test-secret'
 
-from app import create_app, db
-from app.config import Config
+from fastapi.testclient import TestClient
+from app.main import app, socketio_app
+from app.database import Base, engine, ScopedSession
+from sqlalchemy import select
 
-class TestConfig(Config):
-    TESTING = True
-    SQLALCHEMY_DATABASE_URI = 'sqlite:///:memory:'
-    WTF_CSRF_ENABLED = False
-    CELERY = {'task_always_eager': True} # Use eager mode for tests
-    MAIL_SUPPRESS_SEND = True
-    SOS_COOLDOWN_SECONDS = 0
 
-@pytest.fixture
-def app():
-    app = create_app(TestConfig)
-    
-    with app.app_context():
-        db.create_all()
-        yield app
-        db.session.remove()
-        db.drop_all()
+@pytest.fixture(scope='function')
+def client():
+    """Create a fresh test database and return the FastAPI test client."""
+    Base.metadata.create_all(bind=engine)
+    with TestClient(socketio_app) as c:
+        yield c
+    ScopedSession.remove()
+    Base.metadata.drop_all(bind=engine)
 
-@pytest.fixture
-def client(app):
-    return app.test_client()
-
-@pytest.fixture
-def runner(app):
-    return app.test_cli_runner()
 
 @pytest.fixture
 def auth_header(client):
-    """Register and login a user, returning the auth header."""
+    """Register and verify a user, return the Authorization header."""
     # Register
     client.post('/api/auth/register/phone', json={
         "phone_number": "+919876543210",
@@ -44,20 +34,19 @@ def auth_header(client):
         "full_name": "Auth User",
         "country": "India"
     })
-    
-    # Manually verify the user in DB (OTP verification is handled by Android app)
+
+    # Manually verify in DB
     from app.models.user import User
-    from app.extensions import db
-    user = User.query.filter_by(phone="+919876543210").first()
+    user = ScopedSession.scalar(select(User).where(User.phone == "+919876543210"))
     if user:
         user.is_verified = True
-        db.session.commit()
+        ScopedSession.commit()
 
+    # Login
     resp = client.post('/api/auth/login/phone', json={
         "phone_number": "+919876543210",
         "password": "password123"
     })
-        
-    data = json.loads(resp.data)
+    data = resp.json()
     token = data['data']['access_token']
     return {'Authorization': f'Bearer {token}'}

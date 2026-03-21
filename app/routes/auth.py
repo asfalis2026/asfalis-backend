@@ -1,660 +1,359 @@
+"""
+Auth routes — migrated from Flask to FastAPI.
 
-from flask import Blueprint, request, jsonify, current_app
-from app.extensions import db, jwt, limiter
+Token strategy (unchanged):
+  access_token  — 15 min, used on all protected endpoints
+  refresh_token — 30 days, rotated on every /refresh; blocklisted on logout
+  sos_token     — long-lived access token, stored by app for emergency use
+"""
+
+import uuid
+import logging
+from datetime import datetime, timezone, timedelta
+from typing import Optional
+
+from fastapi import APIRouter, Depends, Request, HTTPException
+from jose import jwt as jose_jwt
+
+from app.config import settings
+from app.extensions import db
 from app.models.user import User
 from app.models.settings import UserSettings
-from app.models.trusted_contact import TrustedContact
 from app.models.revoked_token import RevokedToken
 from app.models.device_security import UserDeviceBinding, HandsetChangeRequest
-from app.utils.validators import validate_password
-from app.utils.otp import generate_otp, store_otp, verify_otp
-from app.services.sms_service import send_otp_sms
 from app.schemas.auth_schema import (
-    PhoneRegisterSchema, PhoneLoginSchema,
-    RefreshTokenSchema, ResendOTPSchema,
-    ForgotPasswordSchema, GoogleLoginSchema, VerifyPhoneOTPSchema,
-    ResetPasswordSchema
+    PhoneRegisterRequest, PhoneLoginRequest, VerifyPhoneOTPRequest,
+    ResendOTPRequest, ForgotPasswordRequest, ResetPasswordRequest,
+    RefreshTokenRequest, GoogleLoginRequest,
 )
-from flask_jwt_extended import (
-    create_access_token, create_refresh_token, jwt_required,
-    get_jwt_identity, get_jwt, decode_token
-)
-from flask_jwt_extended.exceptions import JWTDecodeError
-from marshmallow import ValidationError
+from app.dependencies import get_current_user, decode_token_lenient
+from app.utils.validators import validate_password
+from app.utils.otp import store_otp, verify_otp, generate_otp
+from app.services.sms_service import send_otp_sms
+from slowapi import Limiter
+from slowapi.util import get_remote_address
 import bcrypt
-from datetime import datetime, timedelta
 
-auth_bp = Blueprint('auth', __name__)
+logger = logging.getLogger(__name__)
+router = APIRouter()
+limiter = Limiter(key_func=get_remote_address)
 
 
-# ------------------------------------------------------------------ #
-# Helpers                                                             #
-# ------------------------------------------------------------------ #
-
-# Expanded emergency numbers list
-EMERGENCY_NUMBERS = {
-    "India": "112",
-    "United States": "911",
-    "United Kingdom": "999",
-    "Australia": "000",
-    "Canada": "911",
-    "China": "110",
-    "Japan": "119",
-    "Brazil": "190",
-    "South Africa": "10111",
-    "France": "112",
-    "Germany": "112",
-    "Mexico": "911",
-    "United Arab Emirates": "999",
-    "South Korea": "112",
-    "Russia": "112",
-    "USA": "911",
-    "UK": "999",
-    "Spain": "112",
-    "Italy": "112",
-    "Singapore": "995",
-    "New Zealand": "111",
-    "Israel": "100",
-    "Pakistan": "15",
-    "Nigeria": "112",
-    "Argentina": "911",
-    "Switzerland": "112",
-    "Netherlands": "112",
-    "Sweden": "112",
-    "Norway": "112",
-    "Greece": "112",
-    "Ireland": "112",
-    "Portugal": "112",
-    "Turkey": "112",
-    "Saudi Arabia": "999",
-    "Egypt": "122",
-    "Indonesia": "112",
-    "Thailand": "191",
-    "Malaysia": "999",
-    "Philippines": "911",
-    "Vietnam": "113",
-}
-
+# ─── Token helpers ──────────────────────────────────────────────────────────
 
 def _make_tokens(user_id: str):
-    """Return (access_token, refresh_token, sos_token, expires_in).
+    now = datetime.now(timezone.utc)
 
-    sos_token is a long-lived access token (30 days by default) stored by
-    the Android app and used ONLY for /sos/trigger.  This ensures emergency
-    alerts always work even if the regular 15-minute access token has expired.
-    """
-    access_token = create_access_token(identity=user_id)
-    refresh_token = create_refresh_token(identity=user_id)
+    access_payload = {
+        "sub": user_id, "type": "access", "jti": str(uuid.uuid4()),
+        "iat": now, "exp": now + settings.JWT_ACCESS_TOKEN_EXPIRES,
+    }
+    access_token = jose_jwt.encode(access_payload, settings.JWT_SECRET_KEY, algorithm="HS256")
 
-    sos_days = current_app.config.get('JWT_SOS_TOKEN_EXPIRES_DAYS', 30)
-    sos_token = create_access_token(
-        identity=user_id,
-        expires_delta=timedelta(days=sos_days),
-        additional_claims={"token_purpose": "sos"}
-    )
-    expires_in = int(current_app.config['JWT_ACCESS_TOKEN_EXPIRES'].total_seconds())
+    refresh_payload = {
+        "sub": user_id, "type": "refresh", "jti": str(uuid.uuid4()),
+        "iat": now, "exp": now + settings.JWT_REFRESH_TOKEN_EXPIRES,
+    }
+    refresh_token = jose_jwt.encode(refresh_payload, settings.JWT_SECRET_KEY, algorithm="HS256")
+
+    sos_payload = {
+        "sub": user_id, "type": "access", "token_purpose": "sos",
+        "jti": str(uuid.uuid4()), "iat": now,
+        "exp": now + timedelta(days=settings.JWT_SOS_TOKEN_EXPIRES_DAYS),
+    }
+    sos_token = jose_jwt.encode(sos_payload, settings.JWT_SECRET_KEY, algorithm="HS256")
+
+    expires_in = int(settings.JWT_ACCESS_TOKEN_EXPIRES.total_seconds())
     return access_token, refresh_token, sos_token, expires_in
 
 
-def _extract_bearer(request_obj) -> str | None:
-    """Return the raw token from the Authorization: Bearer header, or None."""
-    header = request_obj.headers.get('Authorization', '')
-    if header.startswith('Bearer '):
-        return header[len('Bearer '):]
-    return None
+def _hash_password(password: str) -> str:
+    return bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
 
 
-def _latest_handover_request(user_id: str, new_device_imei: str) -> HandsetChangeRequest | None:
-    return HandsetChangeRequest.query.filter_by(
-        user_id=user_id,
-        new_device_imei=new_device_imei,
-        status='pending'
-    ).order_by(HandsetChangeRequest.requested_at.desc()).first()
+def _check_password(password: str, hashed: str) -> bool:
+    return bcrypt.checkpw(password.encode(), hashed.encode())
 
 
-def _begin_or_get_handover_request(user_id: str, old_device_imei: str | None, new_device_imei: str) -> HandsetChangeRequest:
-    existing = _latest_handover_request(user_id, new_device_imei)
-    if existing:
-        return existing
+# ─── Health / validate ──────────────────────────────────────────────────────
 
-    req = HandsetChangeRequest(
-        user_id=user_id,
-        old_device_imei=old_device_imei,
-        new_device_imei=new_device_imei,
-        status='pending',
-        requested_at=datetime.utcnow(),
-        eligible_at=datetime.utcnow() + timedelta(hours=12)
-    )
-    db.session.add(req)
-    db.session.commit()
-    return req
+@router.get("/validate")
+def validate_token(user_id: str = Depends(get_current_user)):
+    return {"success": True, "user_id": user_id}
 
 
-def _bind_user_to_device(user_id: str, device_imei: str):
-    binding = UserDeviceBinding.query.filter_by(user_id=user_id).first()
-    if not binding:
-        binding = UserDeviceBinding(user_id=user_id, device_imei=device_imei)
-        db.session.add(binding)
-    else:
-        binding.device_imei = device_imei
-        binding.updated_at = datetime.utcnow()
-    binding.last_login_at = datetime.utcnow()
-    db.session.commit()
+# ─── Registration ───────────────────────────────────────────────────────────
 
+@router.post("/register/phone", status_code=201)
+def register_phone(data: PhoneRegisterRequest):
+    phone = data.phone_number
 
-# ------------------------------------------------------------------ #
-# Registration & Verification (phone-based, OTP sent via Twilio)     #
-# ------------------------------------------------------------------ #
+    if User.query.filter_by(phone=phone).first():
+        raise HTTPException(400, detail={"code": "PHONE_TAKEN",
+                                         "message": "Phone number already registered."})
 
-@auth_bp.route('/register/phone', methods=['POST'])
-def register_phone():
-    """Register a new user with phone number.
-
-    The backend generates a 6-digit OTP, stores it in the DB, and sends
-    it to the user's phone via Twilio Messaging (SMS). The OTP is NOT
-    returned in the response — Twilio delivers it directly.
-    """
-    schema = PhoneRegisterSchema()
-    try:
-        data = schema.load(request.json)
-    except ValidationError as err:
-        return jsonify(status="error", error_code="VALIDATION_ERROR",
-                       message="Invalid request", details=err.messages), 400
-
-    if User.query.filter_by(phone=data['phone_number']).first():
-        return jsonify(status="error", error_code="CONFLICT",
-                       message="This phone number is already registered."), 409
-
-    if not validate_password(data['password']):
-        return jsonify(status="error", error_code="VALIDATION_ERROR",
-                       message="Password is too weak."), 400
-
-    hashed_pw = bcrypt.hashpw(
-        data['password'].encode('utf-8'), bcrypt.gensalt()
-    ).decode('utf-8')
-
-    emergency_number = EMERGENCY_NUMBERS.get(data.get('country', ''), "112")
+    if not validate_password(data.password):
+        raise HTTPException(400, detail={"code": "WEAK_PASSWORD",
+                                         "message": "Password must be at least 6 chars and contain a digit."})
 
     new_user = User(
-        full_name=data['full_name'],
-        phone=data['phone_number'],
-        country=data['country'],
-        password_hash=hashed_pw,
+        full_name=data.full_name,
+        phone=phone,
+        country=data.country,
+        password_hash=_hash_password(data.password),
         auth_provider='phone',
-        is_verified=False
     )
     db.session.add(new_user)
-    db.session.flush()
+    db.session.flush()  # get ID before commit
 
-    # Create default settings
-    default_settings = UserSettings(
-        user_id=new_user.id, emergency_number=emergency_number
-    )
-    db.session.add(default_settings)
+    # Default settings row
+    db.session.add(UserSettings(user_id=new_user.id))
 
-    otp_code = generate_otp(length=6)
-    store_otp(phone=new_user.phone, otp_code=otp_code, purpose='phone_verification')
+    # Generate and send OTP
+    otp_code = generate_otp()
+    try:
+        store_otp(phone=phone, otp_code=otp_code, purpose='phone_verification')
+    except Exception as e:
+        db.session.rollback()
+        raise HTTPException(500, detail={"code": "OTP_ERROR", "message": str(e)})
 
     db.session.commit()
 
-    sms_status = send_otp_sms(new_user.phone, otp_code)
-
-    resp_data = {
-        "phone_number": new_user.phone,
-        "expires_in": int(current_app.config.get('OTP_EXPIRY_SECONDS', 300)),
-        "sms_status": sms_status,
+    send_result = send_otp_sms(phone, otp_code)
+    resp = {
+        "status": "success",
+        "message": "Registration started. Please verify your phone number.",
+        "data": {"user_id": new_user.id}
     }
-    # In development mode expose the OTP so testing is possible without
-    # a working Twilio account.
-    if current_app.debug:
-        resp_data["otp_code"] = otp_code
-
-    return jsonify(status="success", message="OTP sent to your phone via SMS",
-                   data=resp_data), 201
+    if settings.DEBUG or send_result == "mock-sid":
+        resp["data"]["otp_code"] = otp_code
+    return resp
 
 
-@auth_bp.route('/verify-phone-otp', methods=['POST'])
-def verify_phone_otp():
-    """Verify the OTP sent to the user's phone number."""
-    schema = VerifyPhoneOTPSchema()
-    try:
-        data = schema.load(request.json)
-    except ValidationError as err:
-        return jsonify(status="error", error_code="VALIDATION_ERROR",
-                       message="Invalid request", details=err.messages), 400
+# ─── Phone OTP verification ─────────────────────────────────────────────────
 
-    phone = data['phone_number']
-    otp_code = data['otp_code']
+@router.post("/verify-phone-otp")
+def verify_phone_otp(data: VerifyPhoneOTPRequest):
+    ok, msg = verify_otp(phone=data.phone_number, otp_code=data.otp_code, purpose='phone_verification')
+    if not ok:
+        raise HTTPException(400, detail={"code": "OTP_INVALID", "message": msg})
 
-    valid, msg = verify_otp(phone=phone, otp_code=otp_code, purpose='phone_verification')
-    if not valid:
-        return jsonify(status="error", error_code="OTP_INVALID", message=msg), 422
-
-    user = User.query.filter_by(phone=phone).first()
+    user = User.query.filter_by(phone=data.phone_number).first()
     if not user:
-        return jsonify(status="error", error_code="NOT_FOUND",
-                       message="User not found"), 404
+        raise HTTPException(404, detail={"code": "NOT_FOUND", "message": "User not found."})
 
     user.is_verified = True
     db.session.commit()
 
     access_token, refresh_token, sos_token, expires_in = _make_tokens(user.id)
+    return {
+        "success": True,
+        "message": "Phone verified successfully.",
+        "data": {
+            "access_token": access_token,
+            "refresh_token": refresh_token,
+            "sos_token": sos_token,
+            "expires_in": expires_in,
+            "user_id": user.id,
+            "full_name": user.full_name,
+        }
+    }
 
-    return jsonify(status="success", message="Phone verified successfully", data={
-        "user_id": user.id,
-        "full_name": user.full_name,
-        "phone_number": user.phone,
-        "is_new_user": True,
-        "access_token": access_token,
-        "refresh_token": refresh_token,
-        "sos_token": sos_token,
-        "expires_in": expires_in
-    }), 200
+
+# ─── Resend OTP ─────────────────────────────────────────────────────────────
+
+@router.post("/resend-otp")
+def resend_otp(request: Request, data: ResendOTPRequest):
+    user = User.query.filter_by(phone=data.phone_number).first()
+    if not user:
+        raise HTTPException(404, detail={"code": "NOT_FOUND", "message": "User not found."})
+
+    otp_code = generate_otp()
+    store_otp(phone=data.phone_number, otp_code=otp_code, purpose='phone_verification')
+    send_otp_sms(data.phone_number, otp_code)
+
+    resp = {"success": True, "message": "OTP resent."}
+    if settings.DEBUG:
+        resp["data"] = {"otp_code": otp_code}
+    return resp
 
 
-# ------------------------------------------------------------------ #
-# Login                                                               #
-# ------------------------------------------------------------------ #
+# ─── Login ───────────────────────────────────────────────────────────────────
 
-@auth_bp.route('/login/phone', methods=['POST'])
-@limiter.limit("5/15minutes")
-def login_phone():
-    schema = PhoneLoginSchema()
-    try:
-        data = schema.load(request.json)
-    except ValidationError as err:
-        return jsonify(status="error", error_code="VALIDATION_ERROR",
-                       message="Invalid request", details=err.messages), 400
+@router.post("/login/phone")
+def login_phone(request: Request, data: PhoneLoginRequest):
+    user = User.query.filter_by(phone=data.phone_number).first()
+    if not user:
+        raise HTTPException(401, detail={"code": "INVALID_CREDENTIALS",
+                                         "message": "Invalid phone number or password."})
 
-    user = User.query.filter_by(phone=data['phone_number']).first()
-
-    if not user or not user.password_hash:
-        return jsonify(status="error", error_code="UNAUTHORIZED",
-                       message="Invalid credentials"), 401
-
-    if not bcrypt.checkpw(
-        data['password'].encode('utf-8'),
-        user.password_hash.encode('utf-8')
-    ):
-        return jsonify(status="error", error_code="UNAUTHORIZED",
-                       message="Invalid credentials"), 401
+    if not user.password_hash or not _check_password(data.password, user.password_hash):
+        raise HTTPException(401, detail={"code": "INVALID_CREDENTIALS",
+                                         "message": "Invalid phone number or password."})
 
     if not user.is_verified:
-        return jsonify(status="error", error_code="PHONE_NOT_VERIFIED",
-                       message="Please verify your phone number before logging in."), 403
+        raise HTTPException(403, detail={"code": "UNVERIFIED_PHONE",
+                                         "message": "Please verify your phone number first."})
 
-    device_imei = (data.get('device_imei') or '').strip()
-    confirm_handover = bool(data.get('confirm_handover', False))
-
-    if device_imei and current_app.config.get('IMEI_BINDING_ENABLED', False):
+    # IMEI binding check
+    if settings.IMEI_BINDING_ENABLED and data.device_imei:
         binding = UserDeviceBinding.query.filter_by(user_id=user.id).first()
-
-        # First known login device for this account
         if not binding:
-            _bind_user_to_device(user.id, device_imei)
-        # Normal login from currently bound device
-        elif binding.device_imei == device_imei:
-            binding.last_login_at = datetime.utcnow()
-            db.session.commit()
-        # Different device: create/return a pending handset change request
-        else:
-            req = _begin_or_get_handover_request(
-                user_id=user.id,
-                old_device_imei=binding.device_imei,
-                new_device_imei=device_imei,
-            )
+            binding = UserDeviceBinding(user_id=user.id, device_imei=data.device_imei)
+            db.session.add(binding)
+        elif binding.device_imei != data.device_imei:
+            # Check for pending approved handset change
+            pending = HandsetChangeRequest.query.filter_by(
+                user_id=user.id, new_device_imei=data.device_imei, status='pending'
+            ).order_by(HandsetChangeRequest.requested_at.desc()).first()
 
-            if datetime.utcnow() < req.eligible_at:
-                remaining_seconds = int((req.eligible_at - datetime.utcnow()).total_seconds())
-                if remaining_seconds < 0:
-                    remaining_seconds = 0
-                return jsonify(
-                    status="error",
-                    error_code="HANDSET_CHANGE_PENDING",
-                    message="Login blocked on new device. Handset transfer becomes available after 12 hours.",
-                    data={
-                        "request_id": req.id,
-                        "eligible_at": req.eligible_at.isoformat() + "Z",
-                        "remaining_seconds": remaining_seconds,
-                        "confirm_handover_required": False,
-                    }
-                ), 403
-
-            if not confirm_handover:
-                return jsonify(
-                    status="error",
-                    error_code="HANDSET_CHANGE_CONFIRMATION_REQUIRED",
-                    message="Handset transfer window is open. Re-submit login with confirm_handover=true to transfer account to this device.",
-                    data={
-                        "request_id": req.id,
-                        "eligible_at": req.eligible_at.isoformat() + "Z",
-                        "confirm_handover_required": True,
-                    }
-                ), 403
-
-            # Finalize transfer to the new device
-            _bind_user_to_device(user.id, device_imei)
-            req.status = 'completed'
-            req.completed_at = datetime.utcnow()
-            db.session.commit()
-
-    access_token, refresh_token, sos_token, expires_in = _make_tokens(user.id)
-
-    response_data = {
-        "user_id": user.id,
-        "full_name": user.full_name,
-        "phone_number": user.phone,
-        "is_new_user": False,
-        "access_token": access_token,
-        "refresh_token": refresh_token,
-        "sos_token": sos_token,
-        "expires_in": expires_in,
-    }
-    if device_imei:
-        response_data["device_imei"] = device_imei
-        response_data["device_binding_status"] = "BOUND"
-
-    return jsonify(status="success", message="Login successful", data=response_data), 200
-
-
-@auth_bp.route('/handset-change/status', methods=['POST'])
-def handset_change_status():
-    """Get pending handset transfer request status for a phone + device IMEI."""
-    data = request.get_json(silent=True) or {}
-    phone_number = data.get('phone_number')
-    device_imei = (data.get('device_imei') or '').strip()
-
-    if not phone_number or not device_imei:
-        return jsonify(
-            status="error",
-            error_code="VALIDATION_ERROR",
-            message="phone_number and device_imei are required"
-        ), 400
-
-    user = User.query.filter_by(phone=phone_number).first()
-    if not user:
-        return jsonify(status="error", error_code="NOT_FOUND", message="User not found"), 404
-
-    req = _latest_handover_request(user.id, device_imei)
-    if not req:
-        return jsonify(status="success", data={"has_pending_request": False}), 200
-
-    remaining_seconds = int((req.eligible_at - datetime.utcnow()).total_seconds())
-    if remaining_seconds < 0:
-        remaining_seconds = 0
-
-    return jsonify(status="success", data={
-        "has_pending_request": True,
-        "request_id": req.id,
-        "status": req.status,
-        "eligible_at": req.eligible_at.isoformat() + "Z",
-        "remaining_seconds": remaining_seconds,
-        "confirm_handover_required": datetime.utcnow() >= req.eligible_at,
-    }), 200
-
-
-# ------------------------------------------------------------------ #
-# Token management                                                    #
-# ------------------------------------------------------------------ #
-
-@auth_bp.route('/refresh', methods=['POST'])
-def refresh():
-    """Exchange a valid refresh token for a new access + refresh token pair.
-
-    Accepts the refresh token from:
-      1. JSON body  { "refresh_token": "..." }   ← Android AuthInterceptor sends this
-      2. Authorization: Bearer <token> header    ← legacy / curl usage
-
-    Implements refresh token rotation: the presented refresh token is revoked
-    immediately and a brand-new one is issued.  If the same token is presented
-    again (e.g. parallel requests), the server returns REFRESH_TOKEN_REUSED.
-    """
-    body_data = request.get_json(silent=True) or {}
-    token_str = body_data.get('refresh_token') or _extract_bearer(request)
-
-    if not token_str:
-        return jsonify(status="error", error_code="REFRESH_TOKEN_INVALID",
-                       message="Refresh token is required (body or Authorization header)."), 401
-
-    # Decode and validate the token
-    try:
-        decoded = decode_token(token_str)
-    except JWTDecodeError as e:
-        if 'expired' in str(e).lower():
-            return jsonify(status="error", error_code="REFRESH_TOKEN_EXPIRED",
-                           message="Refresh token has expired. Please log in again."), 401
-        return jsonify(status="error", error_code="REFRESH_TOKEN_INVALID",
-                       message="Invalid refresh token."), 401
-
-    if decoded.get('type') != 'refresh':
-        return jsonify(status="error", error_code="TOKEN_INVALID",
-                       message="Provided token is not a refresh token."), 401
-
-    jti = decoded.get('jti')
-    identity = decoded.get('sub')
-
-    # Rotation guard: fail if this refresh token was already used
-    if RevokedToken.query.filter_by(jti=jti).first():
-        return jsonify(status="error", error_code="REFRESH_TOKEN_REUSED",
-                       message="Refresh token has already been used. Please log in again."), 401
-
-    # Rotate: revoke the old refresh token, issue fresh pair
-    db.session.add(RevokedToken(jti=jti, token_type='refresh'))
-
-    access_token = create_access_token(identity=identity)
-    new_refresh_token = create_refresh_token(identity=identity)
-    expires_in = int(current_app.config['JWT_ACCESS_TOKEN_EXPIRES'].total_seconds())
-
-    db.session.commit()
-
-    return jsonify(status="success", message="Token refreshed", data={
-        "access_token": access_token,
-        "refresh_token": new_refresh_token,
-        "expires_in": expires_in
-    }), 200
-
-@auth_bp.route('/logout', methods=['POST'])
-@jwt_required()
-def logout():
-    """Invalidate the user's refresh token so it cannot be reused after logout.
-
-    Accepts the refresh token (to revoke) from the JSON body:
-      { "refresh_token": "..." }
-    The access token in the Authorization header identifies the caller as usual.
-    """
-    body_data = request.get_json(silent=True) or {}
-    refresh_token_str = body_data.get('refresh_token')
-
-    if refresh_token_str:
-        try:
-            decoded = decode_token(refresh_token_str)
-            jti = decoded.get('jti')
-            if jti and not RevokedToken.query.filter_by(jti=jti).first():
-                db.session.add(RevokedToken(jti=jti, token_type='refresh'))
+            if pending and pending.is_eligible:
+                pending.status = 'completed'
+                pending.completed_at = datetime.utcnow()
+                binding.device_imei = data.device_imei
+                binding.last_login_at = datetime.utcnow()
+            elif pending and not pending.is_eligible:
+                hours_left = (pending.eligible_at - datetime.utcnow()).total_seconds() / 3600
+                raise HTTPException(403, detail={
+                    "code": "HANDSET_TRANSFER_PENDING",
+                    "message": f"Handset transfer approved. Available in {hours_left:.1f} hours.",
+                    "hours_remaining": round(hours_left, 1)
+                })
+            elif data.confirm_handover:
+                new_req = HandsetChangeRequest(
+                    user_id=user.id,
+                    old_device_imei=binding.device_imei,
+                    new_device_imei=data.device_imei
+                )
+                db.session.add(new_req)
                 db.session.commit()
-        except JWTDecodeError:
-            pass
-
-    return jsonify(status="success", message="Logged out successfully"), 200
-
-@auth_bp.route('/validate', methods=['GET'])
-@jwt_required()
-def validate_token():
-    current_user_id = get_jwt_identity()
-    return jsonify(status="success", message="Token is valid",
-                   data={"user_id": current_user_id, "is_valid": True}), 200
-
-
-# ------------------------------------------------------------------ #
-# OTP helpers (resend / forgot password)                              #
-# ------------------------------------------------------------------ #
-
-@auth_bp.route('/resend-otp', methods=['POST'])
-@limiter.limit("3/15minutes")
-def resend_otp():
-    """Resend a verification OTP for an unverified phone number.
-
-    Generates a fresh OTP, stores it in the DB, and sends it via
-    Twilio Messaging. The code is NOT returned in the response.
-    """
-    schema = ResendOTPSchema()
-    try:
-        data = schema.load(request.json)
-    except ValidationError as err:
-        return jsonify(status="error", error_code="VALIDATION_ERROR",
-                       message="Invalid request", details=err.messages), 400
-
-    phone = data['phone_number']
-
-    user = User.query.filter_by(phone=phone).first()
-    if not user:
-        # Don't reveal whether the number is registered
-        return jsonify(status="success",
-                       message="If the number is registered, a new OTP will be sent.",
-                       data={"expires_in": int(current_app.config.get('OTP_EXPIRY_SECONDS', 300))}), 200
-
-    if user.is_verified:
-        return jsonify(status="error", error_code="ALREADY_VERIFIED",
-                       message="Phone number is already verified."), 400
-
-    otp_code = generate_otp(length=6)
-    store_otp(phone=phone, otp_code=otp_code, purpose='phone_verification')
-    sms_status = send_otp_sms(phone, otp_code)
-
-    resp_data = {
-        "expires_in": int(current_app.config.get('OTP_EXPIRY_SECONDS', 300)),
-        "sms_status": sms_status,
-    }
-    if current_app.debug:
-        resp_data["otp_code"] = otp_code
-
-    return jsonify(status="success", message="OTP resent via SMS",
-                   data=resp_data), 200
-
-
-@auth_bp.route('/forgot-password', methods=['POST'])
-@limiter.limit("3/15minutes")
-def forgot_password():
-    """Send a password-reset OTP via Twilio Messaging.
-
-    Generates OTP, stores in DB, sends via Twilio SMS. The code is NOT
-    returned in the response. Follow up with POST /reset-password.
-    """
-    schema = ForgotPasswordSchema()
-    try:
-        data = schema.load(request.json)
-    except ValidationError as err:
-        return jsonify(status="error", error_code="VALIDATION_ERROR",
-                       message="Invalid request", details=err.messages), 400
-
-    phone = data['phone_number']
-    user = User.query.filter_by(phone=phone).first()
-
-    if not user:
-        # Don't reveal whether the number is registered
-        return jsonify(status="success",
-                       message="If this number exists, an OTP will be sent.",
-                       data={"expires_in": int(current_app.config.get('OTP_EXPIRY_SECONDS', 300))}), 200
-
-    otp_code = generate_otp(length=6)
-    store_otp(phone=phone, otp_code=otp_code, purpose='reset_password')
-    sms_status = send_otp_sms(phone, otp_code)
-
-    resp_data = {
-        "expires_in": int(current_app.config.get('OTP_EXPIRY_SECONDS', 300)),
-        "sms_status": sms_status,
-    }
-    if current_app.debug:
-        resp_data["otp_code"] = otp_code
-
-    return jsonify(status="success", message="Password reset OTP sent via SMS",
-                   data=resp_data), 200
-
-
-@auth_bp.route('/reset-password', methods=['POST'])
-@limiter.limit("3/15minutes")
-def reset_password():
-    """Verify the Twilio OTP and set a new password.
-
-    Use this after POST /forgot-password delivers the OTP to the user's phone.
-    """
-    schema = ResetPasswordSchema()
-    try:
-        data = schema.load(request.json)
-    except ValidationError as err:
-        return jsonify(status="error", error_code="VALIDATION_ERROR",
-                       message="Invalid request", details=err.messages), 400
-
-    phone = data['phone_number']
-    otp_code = data['otp_code']
-    new_password = data['new_password']
-
-    user = User.query.filter_by(phone=phone).first()
-    if not user:
-        return jsonify(status="error", error_code="NOT_FOUND",
-                       message="User not found."), 404
-
-    valid, msg = verify_otp(phone=phone, otp_code=otp_code, purpose='reset_password')
-    if not valid:
-        return jsonify(status="error", error_code="OTP_INVALID", message=msg), 422
-
-    if not validate_password(new_password):
-        return jsonify(status="error", error_code="VALIDATION_ERROR",
-                       message="Password is too weak."), 400
-
-    user.password_hash = bcrypt.hashpw(
-        new_password.encode('utf-8'), bcrypt.gensalt()
-    ).decode('utf-8')
+                raise HTTPException(403, detail={
+                    "code": "HANDSET_TRANSFER_INITIATED",
+                    "message": "Handset transfer request submitted. Please try again in 12 hours.",
+                    "eligible_at": new_req.eligible_at.isoformat()
+                })
+            else:
+                raise HTTPException(403, detail={
+                    "code": "DEVICE_MISMATCH",
+                    "message": "This account is linked to a different device.",
+                    "requires_handover_confirmation": True
+                })
+        binding.last_login_at = datetime.utcnow()
     db.session.commit()
 
-    return jsonify(status="success", message="Password reset successfully."), 200
-
-
-# ------------------------------------------------------------------ #
-# Google OAuth (kept for future use — still mocked)                   #
-# ------------------------------------------------------------------ #
-
-@auth_bp.route('/google', methods=['POST'])
-def google_auth():
-    schema = GoogleLoginSchema()
-    try:
-        data = schema.load(request.json)
-    except ValidationError as err:
-        return jsonify(status="error", error_code="VALIDATION_ERROR",
-                       message="Invalid request", details=err.messages), 400
-
-    id_token = data['id_token']
-
-    # TODO: Replace with real Google token verification
-    email = "mock_google_user@gmail.com"
-    full_name = "Google User"
-
-    user = User.query.filter_by(email=email).first()
-    is_new = False
-
-    if not user:
-        is_new = True
-        user = User(
-            full_name=full_name,
-            email=email,
-            auth_provider='google',
-            is_verified=True
-        )
-        db.session.add(user)
-        db.session.flush()
-
-        db.session.add(UserSettings(user_id=user.id))
-        db.session.commit()
-
     access_token, refresh_token, sos_token, expires_in = _make_tokens(user.id)
+    return {
+        "success": True,
+        "message": "Login successful.",
+        "data": {
+            "access_token": access_token,
+            "refresh_token": refresh_token,
+            "sos_token": sos_token,
+            "expires_in": expires_in,
+            "user_id": user.id,
+            "full_name": user.full_name,
+            "auth_provider": user.auth_provider,
+        }
+    }
 
-    return jsonify(status="success", message="Google login successful", data={
-        "user_id": user.id,
-        "full_name": user.full_name,
-        "email": user.email,
-        "is_new_user": is_new,
-        "access_token": access_token,
-        "refresh_token": refresh_token,
-        "sos_token": sos_token,
-        "expires_in": expires_in
-    }), 200
+
+# ─── Token refresh ───────────────────────────────────────────────────────────
+
+@router.post("/refresh")
+def refresh_token(data: RefreshTokenRequest):
+    token_str = data.refresh_token
+    try:
+        payload = decode_token_lenient(token_str)
+    except HTTPException:
+        raise HTTPException(401, detail={"code": "REFRESH_TOKEN_INVALID",
+                                         "message": "Invalid refresh token."})
+
+    jti = payload.get("jti")
+    if not jti:
+        raise HTTPException(401, detail={"code": "REFRESH_TOKEN_INVALID",
+                                         "message": "Token missing JTI."})
+
+    if RevokedToken.query.filter_by(jti=jti).first():
+        raise HTTPException(401, detail={"code": "REFRESH_TOKEN_REUSED",
+                                         "message": "Refresh token already used. Please log in again."})
+
+    user_id = payload.get("sub")
+    if not user_id:
+        raise HTTPException(401, detail={"code": "REFRESH_TOKEN_INVALID",
+                                         "message": "Invalid refresh token."})
+
+    # Revoke old token
+    db.session.add(RevokedToken(jti=jti, token_type='refresh'))
+    db.session.commit()
+
+    access_token, refresh_token_new, sos_token, expires_in = _make_tokens(user_id)
+    return {
+        "success": True,
+        "data": {
+            "access_token": access_token,
+            "refresh_token": refresh_token_new,
+            "expires_in": expires_in
+        }
+    }
+
+
+# ─── Logout ──────────────────────────────────────────────────────────────────
+
+@router.post("/logout")
+def logout(data: RefreshTokenRequest):
+    try:
+        payload = decode_token_lenient(data.refresh_token)
+        jti = payload.get("jti")
+        if jti and not RevokedToken.query.filter_by(jti=jti).first():
+            db.session.add(RevokedToken(jti=jti, token_type='refresh'))
+            db.session.commit()
+    except Exception:
+        pass
+    return {"success": True, "message": "Logged out successfully."}
+
+
+# ─── Forgot / Reset password ─────────────────────────────────────────────────
+
+@router.post("/forgot-password")
+def forgot_password(request: Request, data: ForgotPasswordRequest):
+    user = User.query.filter_by(phone=data.phone_number).first()
+    if not user:
+        raise HTTPException(404, detail={"code": "NOT_FOUND",
+                                         "message": "No account with that phone number."})
+
+    otp_code = generate_otp()
+    store_otp(phone=data.phone_number, otp_code=otp_code, purpose='reset_password')
+    send_otp_sms(data.phone_number, otp_code)
+
+    resp = {"success": True, "message": "Password reset OTP sent."}
+    if settings.DEBUG:
+        resp["data"] = {"otp_code": otp_code}
+    return resp
+
+
+@router.post("/reset-password")
+def reset_password(data: ResetPasswordRequest):
+    ok, msg = verify_otp(phone=data.phone_number, otp_code=data.otp_code, purpose='reset_password')
+    if not ok:
+        raise HTTPException(400, detail={"code": "OTP_INVALID", "message": msg})
+
+    if not validate_password(data.new_password):
+        raise HTTPException(400, detail={"code": "WEAK_PASSWORD",
+                                         "message": "Password must be at least 6 chars and contain a digit."})
+
+    user = User.query.filter_by(phone=data.phone_number).first()
+    if not user:
+        raise HTTPException(404, detail={"code": "NOT_FOUND", "message": "User not found."})
+
+    user.password_hash = _hash_password(data.new_password)
+    db.session.commit()
+    return {"success": True, "message": "Password reset successfully."}
+
+
+# ─── Google OAuth (mocked) ────────────────────────────────────────────────────
+
+@router.post("/google")
+def google_login(data: GoogleLoginRequest):
+    # TODO: verify id_token with Google SDK
+    raise HTTPException(501, detail={"code": "NOT_IMPLEMENTED",
+                                     "message": "Google OAuth not yet implemented."})

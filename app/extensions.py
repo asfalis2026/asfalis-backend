@@ -1,17 +1,45 @@
+"""
+Flask-SQLAlchemy compatibility proxy + Socket.IO server.
 
-from flask_sqlalchemy import SQLAlchemy
-from flask_migrate import Migrate
-from flask_jwt_extended import JWTManager
-from flask_socketio import SocketIO
-from flask_cors import CORS
-from flask_limiter import Limiter
-from flask_limiter.util import get_remote_address
+Provides:
+  db         — thin proxy around ScopedSession so services can keep using
+               db.session.add(), db.session.commit(), db.session.get() etc.
+  sio        — python-socketio AsyncServer (replaces Flask-SocketIO)
+  socketio   — alias for sio (backward compat with location_service.py)
+"""
 
-db = SQLAlchemy()
-migrate = Migrate()
-jwt = JWTManager()
+from app.database import ScopedSession
+from sqlalchemy import text
+import socketio as _socketio_lib
 
-# Use threading mode for Socket.IO (eventlet has compatibility issues with Python 3.13)
-socketio = SocketIO(cors_allowed_origins="*", async_mode='threading') # Allow all origins for now
-cors = CORS()
-limiter = Limiter(key_func=get_remote_address, on_breach=lambda limit: None)
+# ── Database proxy (Flask-SQLAlchemy style) ──────────────────────────────────
+
+class _DBProxy:
+    """
+    Minimal proxy that delegates to the thread-local ScopedSession so all
+    existing service/route code that uses `db.session.add(...)` continues
+    to work without modification.
+    """
+
+    @property
+    def session(self):
+        return ScopedSession
+
+    @staticmethod
+    def text(t):
+        return text(t)
+
+
+db = _DBProxy()
+
+# ── Socket.IO (async ASGI) ────────────────────────────────────────────────────
+
+sio = _socketio_lib.AsyncServer(
+    async_mode='asgi',
+    cors_allowed_origins='*',
+    logger=False,
+    engineio_logger=False,
+)
+
+# Backward-compat alias used by location_service.py
+socketio = sio

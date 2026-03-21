@@ -1,22 +1,22 @@
-
-from app.extensions import db
+from sqlalchemy import Column, String, Boolean, DateTime, Text, Enum, ForeignKey
 from datetime import datetime
 import uuid
 
-class UserSettings(db.Model):
+from app.database import Base
+
+
+class UserSettings(Base):
     __tablename__ = 'user_settings'
 
-    id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
-    user_id = db.Column(db.String(36), db.ForeignKey('users.id'), unique=True, nullable=False)
-    emergency_number = db.Column(db.String(20), nullable=False, default='911')
-    sos_message = db.Column(db.Text, nullable=False, default="Emergency! I need help. This is an automated SOS alert from Women Safety app. My live location is attached.")
-    shake_sensitivity = db.Column(db.Enum('low', 'medium', 'high', name='sensitivity_enum'), default='medium')
-    battery_optimization = db.Column(db.Boolean, default=True)
-    haptic_feedback = db.Column(db.Boolean, default=True)
-    # Auto SOS: when True, sensor data (accel/gyro) is processed by the ML model
-    # and triggers SOS automatically if danger is detected.
-    auto_sos_enabled = db.Column(db.Boolean, default=False, nullable=False)
-    updated_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_id = Column(String(36), ForeignKey('users.id'), unique=True, nullable=False)
+    emergency_number = Column(String(20), nullable=False, default='911')
+    sos_message = Column(Text, nullable=False, default="Emergency! I need help. This is an automated SOS alert from Women Safety app. My live location is attached.")
+    shake_sensitivity = Column(Enum('low', 'medium', 'high', name='sensitivity_enum'), default='medium')
+    battery_optimization = Column(Boolean, default=True)
+    haptic_feedback = Column(Boolean, default=True)
+    auto_sos_enabled = Column(Boolean, default=False, nullable=False)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     def to_dict(self):
         return {

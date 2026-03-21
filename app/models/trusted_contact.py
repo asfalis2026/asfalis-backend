@@ -1,21 +1,24 @@
-
-from app.extensions import db
+from sqlalchemy import Column, String, Boolean, DateTime, ForeignKey
+from sqlalchemy.orm import relationship
 from datetime import datetime
 import uuid
 
-class TrustedContact(db.Model):
+from app.database import Base
+
+
+class TrustedContact(Base):
     __tablename__ = 'trusted_contacts'
 
-    id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
-    user_id = db.Column(db.String(36), db.ForeignKey('users.id'), nullable=False)
-    name = db.Column(db.String(100), nullable=False)
-    phone = db.Column(db.String(20), nullable=False)
-    email = db.Column(db.String(255), nullable=True)
-    relationship = db.Column(db.String(50), nullable=True)
-    is_primary = db.Column(db.Boolean, default=False)
-    is_verified = db.Column(db.Boolean, default=False)
-    verified_at = db.Column(db.DateTime, nullable=True)
-    created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_id = Column(String(36), ForeignKey('users.id'), nullable=False)
+    name = Column(String(100), nullable=False)
+    phone = Column(String(20), nullable=False)
+    email = Column(String(255), nullable=True)
+    relationship = Column(String(50), nullable=True)
+    is_primary = Column(Boolean, default=False)
+    is_verified = Column(Boolean, default=False)
+    verified_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
 
     def to_dict(self):
         return {

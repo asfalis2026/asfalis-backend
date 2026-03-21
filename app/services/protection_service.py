@@ -1,9 +1,10 @@
-
 import os
 import time
 import numpy as np
 import joblib
-from flask import current_app
+import logging
+from app.config import settings
+from app.extensions import db
 
 from app.services.sos_service import trigger_sos, dispatch_sos
 
@@ -40,7 +41,6 @@ def _get_model():
         try:
             # Try loading from DB first
             from app.models.ml_model import MLModel
-            from app.extensions import db
             import io
 
             active_model = MLModel.query.filter_by(is_active=True).order_by(MLModel.created_at.desc()).first()
@@ -273,15 +273,15 @@ def toggle_protection(user_id, is_active):
     after a restart).
     """
     from app.models.settings import UserSettings
-    from app.extensions import db
+    # from app.extensions import db # Already imported at top
 
     # Create the settings row if it doesn't exist yet (e.g. fresh account).
-    settings = UserSettings.query.filter_by(user_id=user_id).first()
-    if not settings:
-        settings = UserSettings(user_id=user_id)
-        db.session.add(settings)
+    settings_obj = UserSettings.query.filter_by(user_id=user_id).first()
+    if not settings_obj:
+        settings_obj = UserSettings(user_id=user_id)
+        db.session.add(settings_obj)
 
-    settings.auto_sos_enabled = is_active
+    settings_obj.auto_sos_enabled = is_active
     try:
         db.session.commit()
     except Exception as e:
@@ -314,8 +314,8 @@ def _is_protection_active(user_id):
     # Slow path: DB look-up (only once per user per process lifetime)
     try:
         from app.models.settings import UserSettings
-        settings = UserSettings.query.filter_by(user_id=user_id).first()
-        if settings and settings.auto_sos_enabled:
+        settings_obj = UserSettings.query.filter_by(user_id=user_id).first()
+        if settings_obj and settings_obj.auto_sos_enabled:
             active_protection_users[user_id] = True  # warm cache
             return True
     except Exception:
@@ -377,14 +377,14 @@ def analyze_sensor_data(user_id, sensor_type, readings, sensitivity):
         predicted_label = 1 if is_danger else 0
         save_training_data(user_id, sensor_type, readings, label=predicted_label, is_verified=False)
     except Exception as e:
-        print(f"⚠️ Failed to auto-save training data: {e}")
+        logging.warning(f"⚠️ Failed to auto-save training data: {e}")
 
     if is_danger:
         # Block auto-SOS when only the uncalibrated file-fallback model is
         # loaded.  Only a DB-trained model (produced by /protection/train-model
         # on real user data) is reliable enough to trigger an emergency alert.
         if not _has_db_model():
-            current_app.logger.warning(
+            logging.warning(
                 f"Auto SOS blocked for user {user_id}: no calibrated DB model. "
                 "Complete calibration and run /protection/train-model first."
             )
@@ -400,7 +400,7 @@ def analyze_sensor_data(user_id, sensor_type, readings, sensitivity):
         from app.models.settings import UserSettings
         fresh_settings = UserSettings.query.filter_by(user_id=user_id).first()
         if not (fresh_settings and fresh_settings.auto_sos_enabled):
-            current_app.logger.info(
+            logging.info(
                 f"Auto SOS suppressed for user {user_id}: "
                 "system disarmed (fresh DB check caught race with cache)."
             )
@@ -440,7 +440,7 @@ def analyze_sensor_data(user_id, sensor_type, readings, sensitivity):
                                   trigger_reason=trigger_reason)
         _mark_sos_triggered(user_id)
 
-        current_app.logger.warning(
+        logging.warning(
             f"Auto SOS triggered for user {user_id}: {trigger_reason} "
             f"confidence={confidence_danger:.2f} sensor={sensor_type}"
         )
@@ -499,7 +499,7 @@ def predict_from_window(user_id, window_data, sensor_type='accelerometer', locat
     if prediction == 1:
         # Block auto-SOS when only the uncalibrated file-fallback model is loaded.
         if not _has_db_model():
-            current_app.logger.warning(
+            logging.warning(
                 f"Auto SOS (predict) blocked for user {user_id}: no calibrated DB model."
             )
             response["sos_sent"] = False
@@ -512,7 +512,7 @@ def predict_from_window(user_id, window_data, sensor_type='accelerometer', locat
         from app.models.settings import UserSettings
         fresh_settings = UserSettings.query.filter_by(user_id=user_id).first()
         if not (fresh_settings and fresh_settings.auto_sos_enabled):
-            current_app.logger.info(
+            logging.info(
                 f"Auto SOS (predict) suppressed for user {user_id}: "
                 "system disarmed (fresh DB check)."
             )
@@ -554,7 +554,7 @@ def predict_from_window(user_id, window_data, sensor_type='accelerometer', locat
                                   trigger_reason=trigger_reason)
         _mark_sos_triggered(user_id)
 
-        current_app.logger.warning(
+        logging.warning(
             f"Auto SOS (predict) countdown started for user {user_id}: "
             f"{trigger_reason} confidence={confidence:.2f} sensor={sensor_type}"
         )
@@ -570,7 +570,7 @@ def predict_from_window(user_id, window_data, sensor_type='accelerometer', locat
         response["alert_id"] = alert.id if alert else None
         response["message"] = msg
         response["trigger_reason"] = trigger_reason
-        response["countdown_seconds"] = current_app.config.get("SOS_COUNTDOWN_SECONDS", 10)
+        response["countdown_seconds"] = settings.SOS_COUNTDOWN_SECONDS
 
     else:
         response["sos_sent"] = False
@@ -614,7 +614,7 @@ def save_training_data(user_id, sensor_type, readings, label, is_verified=False)
         return True, f"Saved {len(new_records)} training records."
     except Exception as e:
         db.session.rollback()
-        current_app.logger.error(f"Failed to save training data: {e}")
+        logging.error(f"Failed to save training data: {e}")
         return False, str(e)
 
 
@@ -675,5 +675,5 @@ def submit_sos_feedback(user_id, alert_id, is_false_alarm):
         return True, f"Feedback saved — {updated} training record(s) re-labelled as {'safe' if is_false_alarm else 'danger'}."
     except Exception as e:
         db.session.rollback()
-        current_app.logger.error(f"Failed to save SOS feedback: {e}")
+        logging.error(f"Failed to save SOS feedback: {e}")
         return False, str(e)

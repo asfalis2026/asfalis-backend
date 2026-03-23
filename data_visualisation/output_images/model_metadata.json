@@ -1,0 +1,75 @@
+{
+    "model_name": "auto_sos_mobile.tflite",
+    "description": "Mobile optimized neural network for SOS detection from accelerometer features.",
+    "input": {
+        "shape": "(1, 17)",
+        "type": "float32",
+        "description": "17 extracted statistical features from a 300-point 50Hz window.",
+        "features": [
+            "X_mean",
+            "X_std",
+            "X_max",
+            "X_min",
+            "X_sum_sq",
+            "Y_mean",
+            "Y_std",
+            "Y_max",
+            "Y_min",
+            "Y_sum_sq",
+            "Z_mean",
+            "Z_std",
+            "Z_max",
+            "Z_min",
+            "Z_sum_sq",
+            "is_accelerometer",
+            "is_gyroscope"
+        ],
+        "normalization": {
+            "method": "StandardScaler",
+            "mean": [
+                0.28111044190683326,
+                0.48369061778987954,
+                1.857682573602354,
+                -1.288860471297739,
+                302.8954522871285,
+                -0.21107389881248795,
+                0.39754594706682317,
+                0.9070408009612437,
+                -1.7191278480944767,
+                252.35871356023515,
+                0.37088904947900087,
+                0.3948704019153705,
+                1.8426476890663448,
+                -1.1082803464005533,
+                236.2857454286205,
+                1.0,
+                0.0
+            ],
+            "scale": [
+                0.4610579353244345,
+                0.6957710795172002,
+                1.776176248575314,
+                2.030953738559643,
+                831.3232173292265,
+                0.6618382082700076,
+                0.44785145548135435,
+                1.17659559006167,
+                2.1349084873224338,
+                854.7225691019528,
+                0.5289385053944201,
+                0.4629923170438036,
+                1.790552476672731,
+                1.9308784547629259,
+                394.15615689888176,
+                1.0,
+                1.0
+            ]
+        }
+    },
+    "output": {
+        "shape": "(1, 1)",
+        "type": "float32",
+        "description": "Probability of DANGER (0.0 to 1.0). If probability > threshold, trigger SOS."
+    },
+    "recommended_threshold": 0.6
+}

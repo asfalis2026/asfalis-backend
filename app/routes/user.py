@@ -1,47 +1,37 @@
+"""User profile routes — converted to FastAPI."""
 
-from flask import Blueprint, jsonify, request
-from flask_jwt_extended import jwt_required, get_jwt_identity, get_jwt
+import logging
+from fastapi import APIRouter, Depends, HTTPException
+
+from app.extensions import db
 from app.models.user import User
 from app.models.trusted_contact import TrustedContact
-from app.extensions import db, limiter
-from app.schemas.user_schema import UpdateProfileSchema, FCMTokenSchema
-from marshmallow import ValidationError
-import logging
+from app.schemas.user_schema import UpdateProfileRequest, FCMTokenRequest
+from app.dependencies import get_current_user
 
 logger = logging.getLogger(__name__)
+router = APIRouter()
 
-user_bp = Blueprint('user', __name__)
 
-
-@user_bp.route('/security-policy', methods=['GET'])
-@jwt_required()
-def get_security_policy():
-    """Return backend-defined client security policy for sensitive screens."""
-    return jsonify(success=True, data={
+@router.get("/security-policy")
+def get_security_policy(user_id: str = Depends(get_current_user)):
+    return {"success": True, "data": {
         "screenshot_protection": {
             "enabled": True,
-            "protected_screens": [
-                "trusted_contacts",
-                "sos_history"
-            ]
+            "protected_screens": ["trusted_contacts", "sos_history"]
         }
-    }), 200
+    }}
 
-@user_bp.route('/profile', methods=['GET'])
-@jwt_required()
-def get_profile():
-    current_user_id = get_jwt_identity()
-    user = db.session.get(User, current_user_id)
 
+@router.get("/profile")
+def get_profile(user_id: str = Depends(get_current_user)):
+    user = db.session.get(User, user_id)
     if not user:
-        return jsonify(success=False, error={"code": "NOT_FOUND", "message": "User not found"}), 404
+        raise HTTPException(404, detail={"code": "NOT_FOUND", "message": "User not found."})
 
     try:
-        member_since = user.created_at.strftime('%B %Y')
-        is_protection_active = True
-        contacts = TrustedContact.query.filter_by(user_id=current_user_id).all()
-
-        return jsonify(success=True, data={
+        contacts = TrustedContact.query.filter_by(user_id=user_id).all()
+        return {"success": True, "data": {
             "user_id": user.id,
             "full_name": user.full_name,
             "email": user.email,
@@ -52,135 +42,83 @@ def get_profile():
             "emergency_contact": user.settings.emergency_number if user.settings else None,
             "trusted_contacts": [c.to_dict() for c in contacts],
             "trusted_contacts_count": len(contacts),
-            "member_since": member_since,
-            "is_protection_active": is_protection_active,
-            "auth_provider": user.auth_provider
-        }), 200
+            "member_since": user.created_at.strftime('%B %Y'),
+            "is_protection_active": True,
+            "auth_provider": user.auth_provider,
+        }}
     except Exception as e:
-        logger.error(f"Profile fetch failed for user {current_user_id}: {e}")
+        logger.error(f"Profile fetch failed for user {user_id}: {e}")
         db.session.rollback()
-        return jsonify(success=False, error={"code": "INTERNAL_ERROR", "message": "Failed to fetch profile"}), 500
+        raise HTTPException(500, detail={"code": "INTERNAL_ERROR", "message": "Failed to fetch profile."})
 
-@user_bp.route('/profile', methods=['PUT'])
-@jwt_required()
-def update_profile():
-    current_user_id = get_jwt_identity()
-    user = db.session.get(User, current_user_id)
 
+@router.put("/profile")
+def update_profile(data: UpdateProfileRequest, user_id: str = Depends(get_current_user)):
+    user = db.session.get(User, user_id)
     if not user:
-        return jsonify(success=False, error={"code": "NOT_FOUND", "message": "User not found"}), 404
+        raise HTTPException(404, detail={"code": "NOT_FOUND", "message": "User not found."})
 
-    schema = UpdateProfileSchema()
-    try:
-        data = schema.load(request.json)
-    except ValidationError as err:
-        return jsonify(success=False, error={"code": "VALIDATION_ERROR", "message": "Invalid request", "details": err.messages}), 400
+    update = data.model_dump(exclude_none=True)
+    for field in ('full_name', 'phone', 'sos_message', 'profile_image_url'):
+        if field in update:
+            setattr(user, field, update[field])
 
-    if 'full_name' in data:
-        user.full_name = data['full_name']
-    if 'phone' in data:
-        user.phone = data['phone']
-    if 'sos_message' in data:
-        user.sos_message = data['sos_message']
-    if 'profile_image_url' in data:
-        user.profile_image_url = data['profile_image_url']
-    
     try:
         db.session.commit()
     except Exception as e:
         db.session.rollback()
-        logger.error(f"Profile update failed for user {current_user_id}: {str(e)}")
-        # Check for integrity error (unique constraint violation)
-        error_msg = str(e).lower()
-        if "unique" in error_msg or "duplicate" in error_msg:
-             return jsonify(success=False, error={"code": "CONFLICT", "message": "Phone number already in use by another account"}), 409
-        return jsonify(success=False, error={"code": "INTERNAL_ERROR", "message": "An unexpected error occurred", "details": str(e)}), 500
+        err = str(e).lower()
+        if "unique" in err or "duplicate" in err:
+            raise HTTPException(409, detail={"code": "CONFLICT",
+                                             "message": "Phone number already in use."})
+        raise HTTPException(500, detail={"code": "INTERNAL_ERROR", "message": str(e)})
 
-    return jsonify(success=True, message="Profile updated successfully"), 200
+    return {"success": True, "message": "Profile updated successfully."}
 
-@user_bp.route('/fcm-token', methods=['PUT'])
-@jwt_required()
-def update_fcm_token():
-    current_user_id = get_jwt_identity()
-    user = db.session.get(User, current_user_id)
 
+@router.put("/fcm-token")
+def update_fcm_token(data: FCMTokenRequest, user_id: str = Depends(get_current_user)):
+    user = db.session.get(User, user_id)
     if not user:
-        return jsonify(success=False, error={"code": "NOT_FOUND", "message": "User not found"}), 404
-
-    schema = FCMTokenSchema()
-    try:
-        data = schema.load(request.json)
-    except ValidationError as err:
-        return jsonify(success=False, error={"code": "VALIDATION_ERROR", "message": "Invalid request", "details": err.messages}), 400
-
-    user.fcm_token = data['fcm_token']
+        raise HTTPException(404, detail={"code": "NOT_FOUND", "message": "User not found."})
+    user.fcm_token = data.fcm_token
     db.session.commit()
+    return {"success": True, "message": "FCM token updated."}
 
-    return jsonify(success=True, message="FCM token updated"), 200
 
-@user_bp.route('/sos-message', methods=['PUT'])
-@jwt_required()
-def update_sos_message():
-    """Update user's SOS emergency message"""
-    current_user_id = get_jwt_identity()
-    user = db.session.get(User, current_user_id)
-
-    if not user:
-        return jsonify(success=False, error={"code": "NOT_FOUND", "message": "User not found"}), 404
-
-    data = request.get_json()
-    
-    if not data or 'sos_message' not in data:
-        return jsonify(success=False, error={"code": "VALIDATION_ERROR", "message": "sos_message field is required"}), 400
-    
-    sos_message = data.get('sos_message')
-    
-    if not sos_message or len(sos_message.strip()) == 0:
-        return jsonify(success=False, error={"code": "VALIDATION_ERROR", "message": "SOS message cannot be empty"}), 400
-    
+@router.put("/sos-message")
+def update_sos_message(body: dict, user_id: str = Depends(get_current_user)):
+    sos_message = body.get('sos_message')
+    if not sos_message or not sos_message.strip():
+        raise HTTPException(400, detail={"code": "VALIDATION_ERROR",
+                                         "message": "sos_message cannot be empty."})
     if len(sos_message) > 500:
-        return jsonify(success=False, error={"code": "VALIDATION_ERROR", "message": "SOS message too long (max 500 characters)"}), 400
-    
+        raise HTTPException(400, detail={"code": "VALIDATION_ERROR",
+                                         "message": "SOS message too long (max 500 chars)."})
+
+    user = db.session.get(User, user_id)
+    if not user:
+        raise HTTPException(404, detail={"code": "NOT_FOUND", "message": "User not found."})
     user.sos_message = sos_message.strip()
-    
-    try:
-        db.session.commit()
-    except Exception as e:
-        db.session.rollback()
-        return jsonify(success=False, error={"code": "INTERNAL_ERROR", "message": "Failed to update SOS message"}), 500
+    db.session.commit()
+    return {"success": True, "message": "SOS message updated.", "data": {"sos_message": user.sos_message}}
 
-    return jsonify(success=True, message="SOS message updated successfully", data={"sos_message": user.sos_message}), 200
 
-@user_bp.route('/account', methods=['DELETE'])
-@jwt_required()
-def delete_account():
-    current_user_id = get_jwt_identity()
-    user = db.session.get(User, current_user_id)
-
+@router.delete("/account")
+def delete_account(user_id: str = Depends(get_current_user)):
+    user = db.session.get(User, user_id)
     if not user:
-        return jsonify(success=False, error={"code": "NOT_FOUND", "message": "User not found"}), 404
-
-    # Logic to delete related data would go here (cascade delete handles most if configured)
+        raise HTTPException(404, detail={"code": "NOT_FOUND", "message": "User not found."})
     db.session.delete(user)
     db.session.commit()
+    return {"success": True, "message": "Account deleted successfully."}
 
-    return jsonify(success=True, message="Account deleted successfully"), 200
 
-@user_bp.route('/<user_id>', methods=['DELETE'])
-# @jwt_required() # Uncomment to protect if needed, or leave open for dev/admin use as requested? 
-# For safety/consistency with other endpoints, let's at least require a token, 
-# although the user request implies a simple utility. I'll stick to basic protection or open if it's for dev.
-# Given it's "create a delete user endpoint" and usually implies admin, I'll add it but maybe leave auth optional or commented if it's strictly for dev, 
-# but best practice is to protect it. I'll assume it's for admin/dev and protect it with JWT but no role check for now.
-@jwt_required()
-def delete_user_by_id(user_id):
-    # In a real app, check if current_user is Admin
-    user = User.query.get(user_id)
-
+@router.delete("/{target_user_id}")
+def delete_user_by_id(target_user_id: str, user_id: str = Depends(get_current_user)):
+    user = db.session.get(User, target_user_id)
     if not user:
-        return jsonify(success=False, error={"code": "NOT_FOUND", "message": "User not found"}), 404
-
+        raise HTTPException(404, detail={"code": "NOT_FOUND", "message": "User not found."})
     db.session.delete(user)
     db.session.commit()
-
-    return jsonify(success=True, message=f"User {user_id} deleted successfully"), 200
+    return {"success": True, "message": f"User {target_user_id} deleted."}

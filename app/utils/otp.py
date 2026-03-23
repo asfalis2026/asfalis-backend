@@ -1,3 +1,4 @@
+"""OTP utility — uses SQLAlchemy scoped session directly (no Flask context needed)."""
 
 import random
 import string
@@ -6,16 +7,17 @@ from app.extensions import db
 from app.models.otp import OTPRecord
 from app.config import Config
 
+
 def generate_otp(length=6):
     """Generate a numeric OTP of given length."""
     return ''.join(random.choices(string.digits, k=length))
+
 
 def store_otp(phone=None, otp_code=None, purpose=None):
     """Store OTP in database (phone-based only)."""
     if not phone:
         raise ValueError("Phone number must be provided")
 
-    # Invalidate existing OTPs for this phone + purpose
     OTPRecord.query.filter_by(phone=phone, purpose=purpose, is_used=False).update({'is_used': True})
 
     expires_at = datetime.utcnow() + timedelta(seconds=int(Config.OTP_EXPIRY_SECONDS or 300))
@@ -29,6 +31,7 @@ def store_otp(phone=None, otp_code=None, purpose=None):
     db.session.add(otp_record)
     db.session.commit()
     return otp_record
+
 
 def verify_otp(phone=None, otp_code=None, purpose=None):
     """Verify OTP (phone-based only)."""
@@ -46,7 +49,7 @@ def verify_otp(phone=None, otp_code=None, purpose=None):
         return False, "OTP expired"
 
     if otp_record.attempts >= int(Config.MAX_OTP_ATTEMPTS or 5):
-         return False, "Too many attempts"
+        return False, "Too many attempts"
 
     if otp_record.otp_code != otp_code:
         otp_record.attempts += 1

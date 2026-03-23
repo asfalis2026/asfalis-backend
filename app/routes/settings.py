@@ -1,52 +1,40 @@
+"""Settings routes — converted to FastAPI."""
 
-from flask import Blueprint, jsonify, request
-from flask_jwt_extended import jwt_required, get_jwt_identity
-from app.models.settings import UserSettings
+from fastapi import APIRouter, Depends, HTTPException
 from app.extensions import db
-from app.schemas.settings_schema import SettingsSchema
-from marshmallow import ValidationError
+from app.models.settings import UserSettings
+from app.schemas.settings_schema import SettingsUpdateRequest
+from app.dependencies import get_current_user
 
-settings_bp = Blueprint('settings', __name__)
+router = APIRouter()
 
-@settings_bp.route('', methods=['GET'])
-@jwt_required()
-def get_settings():
-    current_user_id = get_jwt_identity()
-    settings = UserSettings.query.filter_by(user_id=current_user_id).first()
-    
-    if not settings:
-        return jsonify(success=False, error={"code": "NOT_FOUND", "message": "Settings not found"}), 404
 
-    return jsonify(success=True, data=settings.to_dict()), 200
+@router.get("")
+def get_settings(user_id: str = Depends(get_current_user)):
+    settings_obj = UserSettings.query.filter_by(user_id=user_id).first()
+    if not settings_obj:
+        raise HTTPException(404, detail={"code": "NOT_FOUND", "message": "Settings not found."})
+    return {"success": True, "data": settings_obj.to_dict()}
 
-@settings_bp.route('', methods=['PUT'])
-@jwt_required()
-def update_settings():
-    current_user_id = get_jwt_identity()
-    settings = UserSettings.query.filter_by(user_id=current_user_id).first()
-    
-    if not settings:
-        return jsonify(success=False, error={"code": "NOT_FOUND", "message": "Settings not found"}), 404
 
-    schema = SettingsSchema(partial=True)
-    try:
-        data = schema.load(request.json)
-    except ValidationError as err:
-        return jsonify(success=False, error={"code": "VALIDATION_ERROR", "message": "Invalid request", "details": err.messages}), 400
+@router.put("")
+def update_settings(data: SettingsUpdateRequest, user_id: str = Depends(get_current_user)):
+    settings_obj = UserSettings.query.filter_by(user_id=user_id).first()
+    if not settings_obj:
+        raise HTTPException(404, detail={"code": "NOT_FOUND", "message": "Settings not found."})
 
-    if 'emergency_number' in data: settings.emergency_number = data['emergency_number']
-    if 'sos_message' in data: settings.sos_message = data['sos_message']
-    if 'shake_sensitivity' in data: settings.shake_sensitivity = data['shake_sensitivity']
-    if 'battery_optimization' in data: settings.battery_optimization = data['battery_optimization']
-    if 'haptic_feedback' in data: settings.haptic_feedback = data['haptic_feedback']
-    if 'auto_sos_enabled' in data:
-        settings.auto_sos_enabled = data['auto_sos_enabled']
-        # Keep the fast in-memory protection cache in sync with the DB flag
+    update = data.model_dump(exclude_none=True)
+    for field in ('emergency_number', 'sos_message', 'shake_sensitivity', 'battery_optimization', 'haptic_feedback'):
+        if field in update:
+            setattr(settings_obj, field, update[field])
+
+    if 'auto_sos_enabled' in update:
+        settings_obj.auto_sos_enabled = update['auto_sos_enabled']
         from app.services.protection_service import active_protection_users
-        if data['auto_sos_enabled']:
-            active_protection_users[current_user_id] = True
+        if update['auto_sos_enabled']:
+            active_protection_users[user_id] = True
         else:
-            active_protection_users.pop(current_user_id, None)
+            active_protection_users.pop(user_id, None)
 
     db.session.commit()
-    return jsonify(success=True, data=settings.to_dict()), 200
+    return {"success": True, "data": settings_obj.to_dict()}

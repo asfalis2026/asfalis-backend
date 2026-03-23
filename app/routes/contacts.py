@@ -1,97 +1,66 @@
+"""Trusted contacts routes — converted to FastAPI."""
 
-from flask import Blueprint, jsonify, request, current_app
-from flask_jwt_extended import jwt_required, get_jwt_identity
-from app.models.trusted_contact import TrustedContact
-from app.models.otp import OTPRecord
-from app.extensions import db, limiter
-from app.schemas.contact_schema import ContactSchema
-from marshmallow import ValidationError
-from app.config import Config
-from app.models.user import User
-from app.services.sms_service import send_contact_verification_otp, send_contact_welcome_sms
-from datetime import datetime, timedelta
 import random
 import logging
+from datetime import datetime, timedelta
+from fastapi import APIRouter, Depends, HTTPException, Request
+
+from app.extensions import db
+from app.models.trusted_contact import TrustedContact
+from app.models.otp import OTPRecord
+from app.models.user import User
+from app.schemas.contact_schema import ContactRequest
+from app.config import Config, settings
+from app.dependencies import get_current_user
+from app.services.sms_service import send_contact_verification_otp, send_contact_welcome_sms
 
 logger = logging.getLogger(__name__)
+router = APIRouter()
 
-contacts_bp = Blueprint('contacts', __name__)
 
-@contacts_bp.route('', methods=['GET'])
-@jwt_required()
-def get_contacts():
-    current_user_id = get_jwt_identity()
-    contacts = TrustedContact.query.filter_by(user_id=current_user_id).all()
-    
-    return jsonify(success=True, data=[contact.to_dict() for contact in contacts], count=len(contacts)), 200
+@router.get("")
+def get_contacts(user_id: str = Depends(get_current_user)):
+    contacts = TrustedContact.query.filter_by(user_id=user_id).all()
+    return {"success": True, "data": [c.to_dict() for c in contacts], "count": len(contacts)}
 
-@contacts_bp.route('', methods=['POST'])
-@jwt_required()
-def add_contact():
-    """Step 1: Initiate adding a trusted contact and send OTP for verification"""
-    current_user_id = get_jwt_identity()
-    
-    # Check max contacts
-    count = TrustedContact.query.filter_by(user_id=current_user_id).count()
+
+@router.post("", status_code=200)
+def add_contact(data: ContactRequest, user_id: str = Depends(get_current_user)):
+    count = TrustedContact.query.filter_by(user_id=user_id).count()
     if count >= int(Config.MAX_TRUSTED_CONTACTS or 5):
-        return jsonify(success=False, error={"code": "Limit Exceeded", "message": "Max trusted contacts reached"}), 400
+        raise HTTPException(400, detail={"code": "Limit Exceeded", "message": "Max trusted contacts reached."})
 
-    schema = ContactSchema()
-    try:
-        data = schema.load(request.json)
-    except ValidationError as err:
-        return jsonify(success=False, error={"code": "VALIDATION_ERROR", "message": "Invalid request", "details": err.messages}), 400
+    phone = data.phone
+    if TrustedContact.query.filter_by(user_id=user_id, phone=phone).first():
+        raise HTTPException(400, detail={"code": "DUPLICATE", "message": "This contact already exists."})
 
-    phone = data['phone']
-    
-    # Check if contact with this phone already exists for the user
-    existing = TrustedContact.query.filter_by(user_id=current_user_id, phone=phone).first()
-    if existing:
-        return jsonify(success=False, error={"code": "DUPLICATE", "message": "This contact already exists"}), 400
-
-    # Generate OTP
     otp_code = str(random.randint(100000, 999999))
     expires_at = datetime.utcnow() + timedelta(seconds=Config.OTP_EXPIRY_SECONDS)
 
-    # Invalidate any existing unused OTPs for this phone + purpose
     OTPRecord.query.filter_by(
-        phone=phone,
-        purpose='trusted_contact_verification',
-        is_used=False
+        phone=phone, purpose='trusted_contact_verification', is_used=False
     ).update({'is_used': True}, synchronize_session=False)
 
-    # Create OTP record
-    otp_record = OTPRecord(
-        phone=phone,
-        otp_code=otp_code,
-        purpose='trusted_contact_verification',
-        expires_at=expires_at
-    )
-    db.session.add(otp_record)
-    
-    # Store pending contact data temporarily (we'll create a new contact after verification)
-    # For now, create the contact but mark as unverified
+    db.session.add(OTPRecord(
+        phone=phone, otp_code=otp_code,
+        purpose='trusted_contact_verification', expires_at=expires_at
+    ))
+
     new_contact = TrustedContact(
-        user_id=current_user_id,
-        name=data['name'],
-        phone=phone,
-        email=data.get('email'),
-        relationship=data.get('relationship'),
-        is_primary=False,  # Will be set after verification
-        is_verified=False
+        user_id=user_id, name=data.name, phone=phone,
+        email=data.email, relationship=data.relationship,
+        is_primary=False, is_verified=False
     )
     db.session.add(new_contact)
-    
+
     try:
         db.session.commit()
     except Exception as e:
         db.session.rollback()
-        logger.error(f"Failed to create pending contact for user {current_user_id}: {e}")
-        return jsonify(success=False, error={"code": "INTERNAL_ERROR", "message": "Failed to initiate contact verification"}), 500
+        raise HTTPException(500, detail={"code": "INTERNAL_ERROR",
+                                         "message": "Failed to initiate contact verification."})
 
-    # Send OTP via Twilio SMS (synchronous so we can detect failures)
     sms_ok, sms_detail = send_contact_verification_otp(phone, otp_code)
-    logger.info(f"OTP send for trusted contact {phone}: success={sms_ok} detail={sms_detail}")
 
     resp_data = {
         "contact_id": new_contact.id,
@@ -99,255 +68,151 @@ def add_contact():
         "otp_sent": sms_ok,
         "expires_in_seconds": Config.OTP_EXPIRY_SECONDS
     }
-
     if not sms_ok:
-        # SMS could not be delivered (e.g. Twilio trial account restriction).
-        # Return the OTP in the response so verification can still proceed.
         resp_data["otp_code"] = otp_code
         resp_data["sms_error"] = sms_detail
-        resp_data["note"] = (
-            "SMS delivery failed. Use the otp_code from this response to verify. "
-            "On a paid Twilio account this field will not appear."
-        )
-        logger.warning(
-            f"SMS delivery failed for {phone}: {sms_detail} — "
-            f"OTP included in response as fallback"
-        )
-    elif current_app.debug:
-        # Debug mode: expose OTP for easy local testing even when SMS succeeds.
+    elif settings.DEBUG:
         resp_data["otp_code"] = otp_code
 
-    return jsonify(
-        success=True,
-        message="OTP sent to contact's phone number" if sms_ok else "OTP generated (SMS delivery failed — see otp_code in response)",
-        data=resp_data
-    ), 200
+    return {
+        "success": True,
+        "message": "OTP sent to contact's phone number" if sms_ok else "OTP generated (SMS failed — see otp_code)",
+        "data": resp_data
+    }
 
 
-@contacts_bp.route('/verify-otp', methods=['POST'])
-@jwt_required()
-def verify_contact_otp():
-    """Step 2: Verify OTP and complete adding the trusted contact"""
-    current_user_id = get_jwt_identity()
-    
-    data = request.json
-    if not data or 'contact_id' not in data or 'otp_code' not in data:
-        return jsonify(success=False, error={"code": "VALIDATION_ERROR", "message": "contact_id and otp_code required"}), 400
-    
-    contact_id = data['contact_id']
-    otp_code = data['otp_code']
-    
-    # First check if contact exists for this user
-    contact = TrustedContact.query.filter_by(id=contact_id, user_id=current_user_id).first()
+@router.post("/verify-otp")
+def verify_contact_otp(body: dict, user_id: str = Depends(get_current_user)):
+    contact_id = body.get('contact_id')
+    otp_code = body.get('otp_code')
+    if not contact_id or not otp_code:
+        raise HTTPException(400, detail={"code": "VALIDATION_ERROR",
+                                         "message": "contact_id and otp_code required."})
+
+    contact = TrustedContact.query.filter_by(id=contact_id, user_id=user_id).first()
     if not contact:
-        return jsonify(success=False, error={"code": "NOT_FOUND", "message": "Contact not found"}), 404
-    
-    # Check if already verified - return success with the verified contact
+        raise HTTPException(404, detail={"code": "NOT_FOUND", "message": "Contact not found."})
+
     if contact.is_verified:
-        return jsonify(
-            success=True, 
-            message="Contact already verified",
-            data=contact.to_dict(),
-            already_verified=True
-        ), 200
-    
-    # Find the OTP record
+        return {"success": True, "message": "Already verified.", "data": contact.to_dict(), "already_verified": True}
+
     otp_record = OTPRecord.query.filter_by(
-        phone=contact.phone,
-        purpose='trusted_contact_verification',
-        is_used=False
+        phone=contact.phone, purpose='trusted_contact_verification', is_used=False
     ).order_by(OTPRecord.created_at.desc()).first()
-    
+
     if not otp_record:
-        return jsonify(success=False, error={"code": "OTP_NOT_FOUND", "message": "No OTP found for this contact"}), 404
-    
-    # Check if OTP expired
+        raise HTTPException(404, detail={"code": "OTP_NOT_FOUND", "message": "No OTP found for this contact."})
     if datetime.utcnow() > otp_record.expires_at:
-        return jsonify(success=False, error={"code": "OTP_EXPIRED", "message": "OTP has expired. Please request a new one"}), 400
-    
-    # Check max attempts
+        raise HTTPException(400, detail={"code": "OTP_EXPIRED", "message": "OTP has expired."})
     if otp_record.attempts >= Config.MAX_OTP_ATTEMPTS:
-        return jsonify(success=False, error={"code": "MAX_ATTEMPTS", "message": "Maximum OTP attempts exceeded"}), 400
-    
-    # Increment attempts
+        raise HTTPException(400, detail={"code": "MAX_ATTEMPTS", "message": "Maximum OTP attempts exceeded."})
+
     otp_record.attempts += 1
-    
-    # Verify OTP
     if otp_record.otp_code != otp_code:
         db.session.commit()
-        return jsonify(success=False, error={"code": "INVALID_OTP", "message": "Invalid OTP code"}), 400
-    
-    # Mark OTP as used
+        raise HTTPException(400, detail={"code": "INVALID_OTP", "message": "Invalid OTP code."})
+
     otp_record.is_used = True
-    
-    # Mark contact as verified
     contact.is_verified = True
     contact.verified_at = datetime.utcnow()
-    
-    # If this should be primary, unset existing primary
-    is_primary = data.get('is_primary', False)
-    if is_primary:
-        TrustedContact.query.filter_by(
-            user_id=current_user_id, is_primary=True
-        ).update({'is_primary': False}, synchronize_session=False)
+
+    if body.get('is_primary'):
+        TrustedContact.query.filter_by(user_id=user_id, is_primary=True).update(
+            {'is_primary': False}, synchronize_session=False)
         contact.is_primary = True
-    
+
     try:
         db.session.commit()
     except Exception as e:
         db.session.rollback()
-        logger.error(f"Failed to verify contact {contact_id}: {e}")
-        return jsonify(success=False, error={"code": "INTERNAL_ERROR", "message": "Failed to verify contact"}), 500
-    
-    # Send welcome SMS to the contact
-    user = db.session.get(User, current_user_id)
-    sender_name = user.full_name if user and user.full_name else "Someone"
-    
-    # Use WhatsApp number for the welcome message (extract phone from "whatsapp:+14155238886" format)
+        raise HTTPException(500, detail={"code": "INTERNAL_ERROR", "message": "Failed to verify contact."})
+
+    user = db.session.get(User, user_id)
+    sender_name = user.full_name if user else "Someone"
     whatsapp_from = Config.TWILIO_WHATSAPP_FROM
     whatsapp_number = whatsapp_from.replace('whatsapp:', '') if whatsapp_from else None
     sandbox_code = Config.TWILIO_SANDBOX_CODE
-    
     if whatsapp_number and sandbox_code:
-        send_status = send_contact_welcome_sms(contact.phone, sender_name, whatsapp_number, sandbox_code)
-        logger.info(f"Welcome SMS sent to verified contact {contact.phone}: {send_status}")
-    
-    return jsonify(
-        success=True, 
-        message="Contact verified and added successfully",
-        data=contact.to_dict()
-    ), 200
+        send_contact_welcome_sms(contact.phone, sender_name, whatsapp_number, sandbox_code)
+
+    return {"success": True, "message": "Contact verified.", "data": contact.to_dict()}
 
 
-@contacts_bp.route('/resend-otp', methods=['POST'])
-@jwt_required()
-def resend_contact_otp():
-    """Resend OTP for a pending contact verification"""
-    current_user_id = get_jwt_identity()
-    
-    data = request.json
-    if not data or 'contact_id' not in data:
-        return jsonify(success=False, error={"code": "VALIDATION_ERROR", "message": "contact_id required"}), 400
-    
-    contact_id = data['contact_id']
-    
-    # Get the pending contact
-    contact = TrustedContact.query.filter_by(id=contact_id, user_id=current_user_id, is_verified=False).first()
+@router.post("/resend-otp")
+def resend_contact_otp(body: dict, user_id: str = Depends(get_current_user)):
+    contact_id = body.get('contact_id')
+    if not contact_id:
+        raise HTTPException(400, detail={"code": "VALIDATION_ERROR", "message": "contact_id required."})
+
+    contact = TrustedContact.query.filter_by(id=contact_id, user_id=user_id, is_verified=False).first()
     if not contact:
-        return jsonify(success=False, error={"code": "NOT_FOUND", "message": "Pending contact not found or already verified"}), 404
-    
-    # Mark all previous OTPs for this phone as used
+        raise HTTPException(404, detail={"code": "NOT_FOUND",
+                                         "message": "Pending contact not found or already verified."})
+
     OTPRecord.query.filter_by(
-        phone=contact.phone,
-        purpose='trusted_contact_verification',
-        is_used=False
+        phone=contact.phone, purpose='trusted_contact_verification', is_used=False
     ).update({'is_used': True}, synchronize_session=False)
-    
-    # Generate new OTP
+
     otp_code = str(random.randint(100000, 999999))
     expires_at = datetime.utcnow() + timedelta(seconds=Config.OTP_EXPIRY_SECONDS)
-    
-    otp_record = OTPRecord(
-        phone=contact.phone,
-        otp_code=otp_code,
-        purpose='trusted_contact_verification',
-        expires_at=expires_at
-    )
-    db.session.add(otp_record)
-    
+    db.session.add(OTPRecord(
+        phone=contact.phone, otp_code=otp_code,
+        purpose='trusted_contact_verification', expires_at=expires_at
+    ))
     try:
         db.session.commit()
     except Exception as e:
         db.session.rollback()
-        logger.error(f"Failed to create new OTP for contact {contact_id}: {e}")
-        return jsonify(success=False, error={"code": "INTERNAL_ERROR", "message": "Failed to resend OTP"}), 500
-    
-    # Send OTP via Twilio SMS (synchronous so we can detect failures)
+        raise HTTPException(500, detail={"code": "INTERNAL_ERROR", "message": "Failed to resend OTP."})
+
     sms_ok, sms_detail = send_contact_verification_otp(contact.phone, otp_code)
-    logger.info(f"OTP resend for trusted contact {contact.phone}: success={sms_ok} detail={sms_detail}")
-
-    resp_data = {
-        "contact_id": contact.id,
-        "phone": contact.phone,
-        "otp_sent": sms_ok,
-        "expires_in_seconds": Config.OTP_EXPIRY_SECONDS
-    }
-
+    resp_data = {"contact_id": contact.id, "phone": contact.phone,
+                 "otp_sent": sms_ok, "expires_in_seconds": Config.OTP_EXPIRY_SECONDS}
     if not sms_ok:
         resp_data["otp_code"] = otp_code
-        resp_data["sms_error"] = sms_detail
-        resp_data["note"] = (
-            "SMS delivery failed. Use the otp_code from this response to verify. "
-            "On a paid Twilio account this field will not appear."
-        )
-        logger.warning(
-            f"SMS delivery failed for {contact.phone}: {sms_detail} — "
-            f"OTP included in response as fallback"
-        )
-    elif current_app.debug:
+    elif settings.DEBUG:
         resp_data["otp_code"] = otp_code
 
-    return jsonify(
-        success=True,
-        message="OTP resent successfully" if sms_ok else "OTP generated (SMS delivery failed — see otp_code in response)",
-        data=resp_data
-    ), 200
+    return {"success": True,
+            "message": "OTP resent." if sms_ok else "OTP generated (SMS failed — see otp_code)",
+            "data": resp_data}
 
-@contacts_bp.route('/<contact_id>', methods=['PUT'])
-@jwt_required()
-def update_contact(contact_id):
-    current_user_id = get_jwt_identity()
-    contact = TrustedContact.query.filter_by(id=contact_id, user_id=current_user_id).first()
-    
+
+@router.put("/{contact_id}")
+def update_contact(contact_id: str, data: ContactRequest, user_id: str = Depends(get_current_user)):
+    contact = TrustedContact.query.filter_by(id=contact_id, user_id=user_id).first()
     if not contact:
-        return jsonify(success=False, error={"code": "NOT_FOUND", "message": "Contact not found"}), 404
+        raise HTTPException(404, detail={"code": "NOT_FOUND", "message": "Contact not found."})
 
-    schema = ContactSchema(partial=True) # Allow partial updates
-    try:
-        data = schema.load(request.json)
-    except ValidationError as err:
-        return jsonify(success=False, error={"code": "VALIDATION_ERROR", "message": "Invalid request", "details": err.messages}), 400
+    update = data.model_dump(exclude_none=True)
+    if update.get('is_primary') and not contact.is_primary:
+        TrustedContact.query.filter_by(user_id=user_id, is_primary=True).update(
+            {'is_primary': False}, synchronize_session=False)
 
-    if data.get('is_primary') and not contact.is_primary:
-        TrustedContact.query.filter_by(
-            user_id=current_user_id, is_primary=True
-        ).update({'is_primary': False}, synchronize_session=False)
-
-    if 'name' in data: contact.name = data['name']
-    if 'phone' in data: contact.phone = data['phone']
-    if 'email' in data: contact.email = data['email']
-    if 'relationship' in data: contact.relationship = data['relationship']
-    if 'is_primary' in data: contact.is_primary = data['is_primary']
-
+    for f in ('name', 'phone', 'email', 'relationship', 'is_primary'):
+        if f in update:
+            setattr(contact, f, update[f])
     db.session.commit()
-    return jsonify(success=True, data=contact.to_dict()), 200
+    return {"success": True, "data": contact.to_dict()}
 
-@contacts_bp.route('/<contact_id>', methods=['DELETE'])
-@jwt_required()
-def delete_contact(contact_id):
-    current_user_id = get_jwt_identity()
-    contact = TrustedContact.query.filter_by(id=contact_id, user_id=current_user_id).first()
-    
+
+@router.delete("/{contact_id}")
+def delete_contact(contact_id: str, user_id: str = Depends(get_current_user)):
+    contact = TrustedContact.query.filter_by(id=contact_id, user_id=user_id).first()
     if not contact:
-        return jsonify(success=False, error={"code": "NOT_FOUND", "message": "Contact not found"}), 404
-
+        raise HTTPException(404, detail={"code": "NOT_FOUND", "message": "Contact not found."})
     db.session.delete(contact)
     db.session.commit()
-    return jsonify(success=True, message="Contact deleted"), 200
+    return {"success": True, "message": "Contact deleted."}
 
-@contacts_bp.route('/<contact_id>/primary', methods=['PUT'])
-@jwt_required()
-def set_primary_contact(contact_id):
-    current_user_id = get_jwt_identity()
-    contact = TrustedContact.query.filter_by(id=contact_id, user_id=current_user_id).first()
-    
+
+@router.put("/{contact_id}/primary")
+def set_primary_contact(contact_id: str, user_id: str = Depends(get_current_user)):
+    contact = TrustedContact.query.filter_by(id=contact_id, user_id=user_id).first()
     if not contact:
-        return jsonify(success=False, error={"code": "NOT_FOUND", "message": "Contact not found"}), 404
-
-    TrustedContact.query.filter_by(
-        user_id=current_user_id, is_primary=True
-    ).update({'is_primary': False}, synchronize_session=False)
+        raise HTTPException(404, detail={"code": "NOT_FOUND", "message": "Contact not found."})
+    TrustedContact.query.filter_by(user_id=user_id, is_primary=True).update(
+        {'is_primary': False}, synchronize_session=False)
     contact.is_primary = True
     db.session.commit()
-
-    return jsonify(success=True, message="Primary contact updated"), 200
+    return {"success": True, "message": "Primary contact updated."}

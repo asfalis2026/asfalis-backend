@@ -1,10 +1,10 @@
 #!/bin/bash
 set -e
 
-# Run migrations
+# Run Alembic migrations (replaces `flask db upgrade`)
 echo "Running database migrations..."
-flask db upgrade
+alembic upgrade head
 
 # Start the application
-echo "Starting application..."
+echo "Starting Asfalis backend..."
 exec "$@"

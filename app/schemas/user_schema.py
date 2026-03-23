@@ -1,11 +1,15 @@
+"""Pydantic schemas for the user profile endpoints."""
 
-from marshmallow import Schema, fields, validate
+from typing import Optional
+from pydantic import BaseModel, Field, HttpUrl
 
-class UpdateProfileSchema(Schema):
-    full_name = fields.Str(validate=validate.Length(min=2, max=100))
-    phone = fields.Str(validate=validate.Length(min=10, max=20))
-    sos_message = fields.Str(validate=validate.Length(min=1, max=500))
-    profile_image_url = fields.Url()
 
-class FCMTokenSchema(Schema):
-    fcm_token = fields.Str(required=True)
+class UpdateProfileRequest(BaseModel):
+    full_name: Optional[str] = Field(None, min_length=2, max_length=100)
+    phone: Optional[str] = Field(None, min_length=10, max_length=20)
+    sos_message: Optional[str] = Field(None, min_length=1, max_length=500)
+    profile_image_url: Optional[str] = None
+
+
+class FCMTokenRequest(BaseModel):
+    fcm_token: str

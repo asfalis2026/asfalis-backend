@@ -1,54 +1,78 @@
+"""Pydantic schemas for authentication endpoints (replaces Marshmallow)."""
 
 import re
-from marshmallow import Schema, fields, validate, validates, ValidationError
+from typing import Optional
+from pydantic import BaseModel, field_validator, Field
 
-# E.164 format: + followed by 7–15 digits (ITU-T E.164 standard)
 E164_RE = re.compile(r'^\+[1-9]\d{6,14}$')
 
-
-def _validate_e164(value):
-    if not E164_RE.match(value):
-        raise ValidationError(
-            "Phone number must be in E.164 format (e.g. +919876543210)."
-        )
+def _check_e164(v: str) -> str:
+    if not E164_RE.match(v):
+        raise ValueError("Phone number must be in E.164 format (e.g. +919876543210).")
+    return v
 
 
-class PhoneRegisterSchema(Schema):
-    full_name = fields.Str(required=True, validate=validate.Length(min=2))
-    phone_number = fields.Str(required=True, validate=_validate_e164)
-    country = fields.Str(required=True)
-    password = fields.Str(required=True, validate=validate.Length(min=8))
+class PhoneRegisterRequest(BaseModel):
+    full_name: str = Field(..., min_length=2)
+    phone_number: str
+    country: str
+    password: str = Field(..., min_length=6)
+
+    @field_validator('phone_number')
+    @classmethod
+    def validate_phone(cls, v):
+        return _check_e164(v)
 
 
-class PhoneLoginSchema(Schema):
-    phone_number = fields.Str(required=True, validate=_validate_e164)
-    password = fields.Str(required=True)
-    device_imei = fields.Str(required=False, allow_none=True, validate=validate.Length(min=8, max=64))
-    confirm_handover = fields.Bool(required=False, load_default=False)
+class PhoneLoginRequest(BaseModel):
+    phone_number: str
+    password: str
+    device_imei: Optional[str] = None
+    confirm_handover: bool = False
+
+    @field_validator('phone_number')
+    @classmethod
+    def validate_phone(cls, v):
+        return _check_e164(v)
 
 
-class VerifyPhoneOTPSchema(Schema):
-    phone_number = fields.Str(required=True, validate=_validate_e164)
-    otp_code = fields.Str(required=True, validate=validate.Length(equal=6))
+class VerifyPhoneOTPRequest(BaseModel):
+    phone_number: str
+    otp_code: str = Field(..., min_length=6, max_length=6)
+
+    @field_validator('phone_number')
+    @classmethod
+    def validate_phone(cls, v):
+        return _check_e164(v)
 
 
-class ResendOTPSchema(Schema):
-    phone_number = fields.Str(required=True, validate=_validate_e164)
+class ResendOTPRequest(BaseModel):
+    phone_number: str
+
+    @field_validator('phone_number')
+    @classmethod
+    def validate_phone(cls, v):
+        return _check_e164(v)
 
 
-class ForgotPasswordSchema(Schema):
-    phone_number = fields.Str(required=True, validate=_validate_e164)
+class ForgotPasswordRequest(BaseModel):
+    phone_number: str
+
+    @field_validator('phone_number')
+    @classmethod
+    def validate_phone(cls, v):
+        return _check_e164(v)
 
 
-class RefreshTokenSchema(Schema):
-    refresh_token = fields.Str(required=True)
+class ResetPasswordRequest(BaseModel):
+    phone_number: str = Field(..., min_length=10)
+    otp_code: str = Field(..., min_length=6, max_length=6)
+    new_password: str = Field(..., min_length=6)
 
 
-class GoogleLoginSchema(Schema):
-    id_token = fields.Str(required=True)
+class RefreshTokenRequest(BaseModel):
+    refresh_token: str
 
 
-class ResetPasswordSchema(Schema):
-    phone_number = fields.Str(required=True, validate=validate.Length(min=10))
-    otp_code = fields.Str(required=True, validate=validate.Length(equal=6))
-    new_password = fields.Str(required=True, validate=validate.Length(min=8))
+class GoogleLoginRequest(BaseModel):
+    id_token: str

@@ -14,8 +14,11 @@ Error codes match the originals so the Android app needs no changes:
 import logging
 from fastapi import Header, HTTPException
 from jose import jwt, JWTError, ExpiredSignatureError
+from sqlalchemy import select
 
 from app.config import settings
+from app.models.revoked_token import RevokedToken
+from app.database import ScopedSession
 
 logger = logging.getLogger(__name__)
 
@@ -76,7 +79,7 @@ def get_current_user(authorization: str = Header(...)) -> str:
 
     Returns the authenticated user's UUID string.
     """
-    if not authorization or not authorization.startswith("Bearer "):
+    if not authorization.startswith("Bearer "):
         raise HTTPException(
             status_code=401,
             detail={"code": "UNAUTHORIZED",
@@ -84,6 +87,12 @@ def get_current_user(authorization: str = Header(...)) -> str:
         )
 
     token = authorization.replace("Bearer ", "", 1)
+    if not token:
+        raise HTTPException(
+            status_code=401,
+            detail={"code": "TOKEN_INVALID",
+                    "message": "Invalid or malformed token. Please log in again."},
+        )
     payload = _decode_token(token)
 
     # Check revocation (only refresh tokens are stored — access tokens are
@@ -92,14 +101,21 @@ def get_current_user(authorization: str = Header(...)) -> str:
     if token_type == "refresh":
         jti = payload.get("jti")
         if jti:
-            from sqlalchemy import select
-            from app.models.revoked_token import RevokedToken
-            from app.database import ScopedSession
-            if ScopedSession.scalar(select(RevokedToken).where(RevokedToken.jti == jti)):
+            try:
+                if ScopedSession.scalar(select(RevokedToken).where(RevokedToken.jti == jti)):
+                    raise HTTPException(
+                        status_code=401,
+                        detail={"code": "REFRESH_TOKEN_REUSED",
+                                "message": "Token has been revoked. Please log in again."},
+                    )
+            except HTTPException:
+                raise
+            except Exception as e:
+                logger.error(f"Revocation check failed for JTI {jti}: {e}")
                 raise HTTPException(
-                    status_code=401,
-                    detail={"code": "REFRESH_TOKEN_REUSED",
-                            "message": "Token has been revoked. Please log in again."},
+                    status_code=500,
+                    detail={"code": "INTERNAL_ERROR",
+                            "message": "Authentication service temporarily unavailable."},
                 )
 
     user_id = payload.get("sub")

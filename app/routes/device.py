@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from app.extensions import db
+from app.models.user import User
 from app.models.device import ConnectedDevice
 from app.models.sos_alert import SOSAlert
 from app.config import settings
@@ -118,9 +119,8 @@ def iot_button_event(data: ButtonEventRequest, user_id: str = Depends(get_curren
     if not alert:
         raise HTTPException(400, detail={"code": "ERROR", "message": msg})
 
-    from app.models.user import User
     from app.utils.timezone_utils import format_datetime_for_response, get_timezone_for_country
-    user = User.query.get(user_id)
+    user = db.session.get(User, user_id)
     tz = get_timezone_for_country(user.country).zone if user and user.country else 'UTC'
 
     return {"success": True, "action": "triggered", "message": msg, "data": {

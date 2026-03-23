@@ -66,11 +66,10 @@ def trigger_sos_route(data: TriggerSOSRequest, user_id: str = Depends(get_curren
 @router.post("/send-now")
 def send_sos_now(body: dict, user_id: str = Depends(get_current_user)):
     alert_id = body.get('alert_id')
-    result = dispatch_sos(alert_id, user_id)
-    if not result.get('success'):
-        raise HTTPException(400, detail={"code": "DISPATCH_ERROR",
-                                         "message": result.get('message', 'Failed to dispatch SOS.')})
-    return result
+    success, msg, delivery_report = dispatch_sos(alert_id, user_id)
+    if not success:
+        raise HTTPException(400, detail={"code": "DISPATCH_ERROR", "message": msg})
+    return {"success": True, "message": msg, "data": {"delivery_report": delivery_report}}
 
 
 @router.post("/cancel")
@@ -94,10 +93,10 @@ def cancel_sos_route(body: dict, user_id: str = Depends(get_current_user)):
 @router.post("/safe")
 def mark_safe_route(body: dict, user_id: str = Depends(get_current_user)):
     alert_id = body.get('alert_id')
-    success, msg = mark_user_safe(alert_id, user_id)
+    success, msg, contacts_notified = mark_user_safe(alert_id, user_id)
     if not success:
         raise HTTPException(400, detail={"code": "SAFE_ERROR", "message": msg})
-    return {"success": True, "message": msg}
+    return {"success": True, "message": msg, "data": {"contacts_notified": contacts_notified}}
 
 
 @router.get("/history")

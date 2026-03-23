@@ -57,7 +57,7 @@ def trigger_sos(user_id, lat, lng, trigger_type='manual', trigger_prefix=None, t
             return existing, f"SOS on cooldown — please wait {secs_left}s before triggering again."
         return None, f"SOS on cooldown — please wait {secs_left}s before triggering again."
 
-    user = User.query.get(user_id)
+    user = db.session.get(User, user_id)
     if not user:
         return None, "User not found"
 
@@ -111,7 +111,7 @@ def trigger_sos(user_id, lat, lng, trigger_type='manual', trigger_prefix=None, t
     return new_alert, "SOS countdown started"
 
 def dispatch_sos(alert_id, user_id=None):
-    alert = SOSAlert.query.get(alert_id)
+    alert = db.session.get(SOSAlert, alert_id)
     if not alert:
         return False, "Alert not found", []
 
@@ -127,7 +127,7 @@ def dispatch_sos(alert_id, user_id=None):
     if alert.status != 'countdown':
         return False, f"Alert cannot be dispatched from state: {alert.status}", []
 
-    user = User.query.get(alert.user_id)
+    user = db.session.get(User, alert.user_id)
     contacts = TrustedContact.query.filter_by(user_id=user.id).all()
 
     # Warn if none are app-verified (contact joined Twilio sandbox ≠ app OTP verified)
@@ -193,7 +193,7 @@ def dispatch_sos(alert_id, user_id=None):
     return True, summary, delivery_report
 
 def cancel_sos(alert_id, user_id=None):
-    alert = SOSAlert.query.get(alert_id)
+    alert = db.session.get(SOSAlert, alert_id)
     if not alert:
         return False, "Alert not found"
 
@@ -232,7 +232,7 @@ def mark_user_safe(alert_id, user_id):
     Returns:
         tuple: (success: bool, message: str, contacts_notified: int)
     """
-    alert = SOSAlert.query.get(alert_id)
+    alert = db.session.get(SOSAlert, alert_id)
     
     # Validation checks
     if not alert:
@@ -265,7 +265,7 @@ def mark_user_safe(alert_id, user_id):
     db.session.commit()
     
     # Get user and verified contacts
-    user = User.query.get(user_id)
+    user = db.session.get(User, user_id)
     if not user:
         return False, "User not found", 0
     

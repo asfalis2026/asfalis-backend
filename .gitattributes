@@ -1,0 +1,9 @@
+# Ensure shell scripts always use Unix line endings (LF)
+*.sh text eol=lf
+
+# Ensure Python files use LF
+*.py text eol=lf
+
+# Windows-specific files use CRLF
+*.bat text eol=crlf
+*.ps1 text eol=crlf

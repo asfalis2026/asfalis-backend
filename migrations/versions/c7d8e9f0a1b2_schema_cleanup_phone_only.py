@@ -22,6 +22,12 @@ depends_on = None
 
 
 def upgrade():
+    bind = op.get_bind()
+    if bind.dialect.name != 'postgresql':
+        # SQLite stores enums as plain VARCHAR — none of the PostgreSQL
+        # type-management DDL below applies. The schema is already correct.
+        return
+
     # ------------------------------------------------------------------ #
     # 1. Wipe all data — fresh start (phone-only auth era)
     # ------------------------------------------------------------------ #

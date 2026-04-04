@@ -435,7 +435,7 @@ def analyze_sensor_data(user_id, sensor_type, readings, sensitivity):
             f"⚠️ AUTO-SOS: {trigger_reason} ({int(confidence_danger * 100)}% confidence)\\n"
             f"Sensor: {sensor_type} | System was armed at time of trigger"
         )
-        alert, msg = trigger_sos(user_id, lat, lng, trigger_type=trigger_type,
+        alert, msg, _ = trigger_sos(user_id, lat, lng, trigger_type=trigger_type,
                                   trigger_prefix=trigger_prefix,
                                   trigger_reason=trigger_reason)
         _mark_sos_triggered(user_id)
@@ -549,7 +549,7 @@ def predict_from_window(user_id, window_data, sensor_type='accelerometer', locat
             f"⚠️ AUTO-SOS: {trigger_reason} ({int(confidence * 100)}% confidence)\\n"
             f"Sensor: {sensor_type} | Location: {location} | System was armed"
         )
-        alert, msg = trigger_sos(user_id, lat, lng, trigger_type=trigger_type,
+        alert, msg, _ = trigger_sos(user_id, lat, lng, trigger_type=trigger_type,
                                   trigger_prefix=trigger_prefix,
                                   trigger_reason=trigger_reason)
         _mark_sos_triggered(user_id)
@@ -570,7 +570,8 @@ def predict_from_window(user_id, window_data, sensor_type='accelerometer', locat
         response["alert_id"] = alert.id if alert else None
         response["message"] = msg
         response["trigger_reason"] = trigger_reason
-        response["countdown_seconds"] = settings.SOS_COUNTDOWN_SECONDS
+        from app.services.sos_service import COUNTDOWN_SECONDS
+        response["countdown_seconds"] = COUNTDOWN_SECONDS
 
     else:
         response["sos_sent"] = False

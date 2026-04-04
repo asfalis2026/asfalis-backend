@@ -8,7 +8,8 @@ from app.utils.timezone_utils import format_datetime_for_display
 from datetime import datetime
 import logging
 
-COUNTDOWN_EXPIRY_SECONDS = 60  # Auto-expire stale countdown alerts after 60s
+COUNTDOWN_SECONDS = 10          # The live countdown window the app displays (seconds)
+COUNTDOWN_EXPIRY_SECONDS = 60  # Backend stale-cleanup guard — cancel if still 'countdown' after 60s
 
 
 def _get_configured_cooldown():
@@ -106,9 +107,11 @@ def trigger_sos(user_id, lat, lng, trigger_type='manual', trigger_prefix=None, t
     mark_triggered()
 
     # Do NOT auto-dispatch here. Client controls countdown state and decides:
-    # - send-now on timeout / navigate home
-    # - mark safe for false alarm
-    return new_alert, "SOS countdown started"
+    # - POST /sos/send-now when countdown expires (no cancel received)
+    # - POST /sos/cancel during the countdown window
+    # The countdown_seconds value is passed back to the caller so the mobile
+    # app uses the server-defined window instead of a hardcoded constant.
+    return new_alert, "SOS countdown started", COUNTDOWN_SECONDS
 
 def dispatch_sos(alert_id, user_id=None):
     alert = db.session.get(SOSAlert, alert_id)

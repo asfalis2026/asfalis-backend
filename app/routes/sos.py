@@ -9,7 +9,10 @@ from app.extensions import db
 from app.models.sos_alert import SOSAlert
 from app.models.user import User
 from app.dependencies import get_current_user
-from app.services.sos_service import trigger_sos, dispatch_sos, cancel_sos, mark_user_safe
+from app.services.sos_service import (
+    trigger_sos, dispatch_sos, cancel_sos, mark_user_safe,
+    COUNTDOWN_SECONDS, COUNTDOWN_EXPIRY_SECONDS,
+)
 from app.utils.timezone_utils import format_datetime_for_response, get_timezone_for_country
 
 logger = logging.getLogger(__name__)
@@ -29,9 +32,9 @@ class WhatsAppTestRequest(BaseModel):
 
 
 def _expire_stale_countdowns(user_id: str):
-    """Auto-expire countdown alerts older than 60 seconds."""
+    """Auto-expire countdown alerts older than COUNTDOWN_EXPIRY_SECONDS."""
     from datetime import datetime, timedelta
-    cutoff = datetime.utcnow() - timedelta(seconds=60)
+    cutoff = datetime.utcnow() - timedelta(seconds=COUNTDOWN_EXPIRY_SECONDS)
     SOSAlert.query.filter(
         SOSAlert.user_id == user_id,
         SOSAlert.status == 'countdown',
@@ -47,12 +50,18 @@ def trigger_sos_route(data: TriggerSOSRequest, user_id: str = Depends(get_curren
         raise HTTPException(400, detail={"code": "NO_CONTACTS",
                                          "message": "Add at least one emergency contact before sending an SOS."})
 
-    alert, msg = trigger_sos(user_id, data.latitude, data.longitude, trigger_type=data.trigger_type)
+    alert, msg, countdown_seconds = trigger_sos(
+        user_id, data.latitude, data.longitude, trigger_type=data.trigger_type
+    )
     if not alert:
         raise HTTPException(400, detail={"code": "SOS_ERROR", "message": msg})
 
+    from datetime import datetime, timedelta
     user = db.session.get(User, user_id)
     tz = get_timezone_for_country(user.country).zone if user and user.country else 'UTC'
+    countdown_expires_at = (
+        alert.triggered_at + timedelta(seconds=countdown_seconds)
+    ).isoformat() + 'Z'
 
     return {"success": True, "message": msg, "data": {
         "alert_id": alert.id,
@@ -60,6 +69,9 @@ def trigger_sos_route(data: TriggerSOSRequest, user_id: str = Depends(get_curren
         "status": alert.status,
         "triggered_at": format_datetime_for_response(alert.triggered_at, user.country if user else None),
         "timezone": tz,
+        # Countdown metadata — app MUST use these instead of hardcoding values
+        "countdown_seconds": countdown_seconds,
+        "countdown_expires_at": countdown_expires_at,
     }}
 
 
@@ -110,6 +122,62 @@ def get_sos_history(user_id: str = Depends(get_current_user)):
         {**alert.to_dict(), "triggered_at": format_datetime_for_response(alert.triggered_at, country)}
         for alert in alerts
     ]}
+
+
+@router.get("/countdown/{alert_id}")
+def get_countdown_status(alert_id: str, user_id: str = Depends(get_current_user)):
+    """
+    Poll the server-side countdown state for an active SOS alert.
+
+    The mobile app calls this after receiving an alert_id from POST /trigger.
+    It lets the app verify the countdown is still valid (not expired or already
+    dispatched/cancelled) and provides an authoritative `seconds_remaining`
+    value to re-sync the on-screen timer if needed.
+
+    Lifecycle:
+      - status='countdown'  → countdown is alive; seconds_remaining > 0
+      - status='sent'       → server already dispatched (or app called /send-now)
+      - status='cancelled'  → user or h/w cancelled during countdown
+      - status='expired'    → countdown window elapsed without action (cleanup ran)
+    """
+    from datetime import datetime, timedelta
+
+    alert = SOSAlert.query.filter_by(id=alert_id, user_id=user_id).first()
+    if not alert:
+        raise HTTPException(404, detail={"code": "NOT_FOUND",
+                                         "message": "Alert not found."})
+
+    response = {
+        "alert_id": alert.id,
+        "status": alert.status,
+        "trigger_type": alert.trigger_type,
+        "triggered_at": alert.triggered_at.isoformat() + 'Z' if alert.triggered_at else None,
+        "countdown_seconds": COUNTDOWN_SECONDS,
+        "seconds_remaining": 0,
+        "countdown_expires_at": None,
+        "is_active": False,
+    }
+
+    if alert.status == 'countdown' and alert.triggered_at:
+        expires_at = alert.triggered_at + timedelta(seconds=COUNTDOWN_SECONDS)
+        now = datetime.utcnow()
+        seconds_remaining = (expires_at - now).total_seconds()
+
+        if seconds_remaining > 0:
+            # Countdown is still live
+            response["is_active"] = True
+            response["seconds_remaining"] = round(seconds_remaining, 2)
+            response["countdown_expires_at"] = expires_at.isoformat() + 'Z'
+        else:
+            # Window elapsed — the app should call /send-now immediately.
+            # The backend stale-cleanup (COUNTDOWN_EXPIRY_SECONDS=60s) will
+            # cancel this alert if /send-now is never called.
+            response["is_active"] = False
+            response["seconds_remaining"] = 0
+            response["countdown_expires_at"] = expires_at.isoformat() + 'Z'
+            response["message"] = "Countdown window elapsed. Call POST /sos/send-now to dispatch."
+
+    return {"success": True, "data": response}
 
 
 @router.post("/test-whatsapp")

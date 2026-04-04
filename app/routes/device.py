@@ -115,7 +115,7 @@ def iot_button_event(data: ButtonEventRequest, user_id: str = Depends(get_curren
         raise HTTPException(400, detail={"code": "NO_CONTACTS",
                                          "message": "Add at least one emergency contact before sending an SOS."})
 
-    alert, msg = trigger_sos(user_id, data.latitude, data.longitude, trigger_type='iot_button')
+    alert, msg, _ = trigger_sos(user_id, data.latitude, data.longitude, trigger_type='iot_button')
     if not alert:
         raise HTTPException(400, detail={"code": "ERROR", "message": msg})
 
@@ -144,7 +144,7 @@ def device_alert(body: dict):
     last_loc = get_last_location(device.user_id)
     lat = last_loc.latitude if last_loc else 0.0
     lng = last_loc.longitude if last_loc else 0.0
-    alert, msg = trigger_sos(device.user_id, lat, lng, trigger_type='bracelet')
+    alert, msg, _ = trigger_sos(device.user_id, lat, lng, trigger_type='bracelet')
     return {"success": True, "message": msg}
 
 

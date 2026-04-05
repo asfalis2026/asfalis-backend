@@ -130,6 +130,12 @@ def register_phone(data: PhoneRegisterRequest):
     return resp
 
 
+@router.post("/register", status_code=201, include_in_schema=False)
+def register_alias_simple(data: PhoneRegisterRequest):
+    """Alias for /register/phone."""
+    return register_phone(data)
+
+
 # ─── Phone OTP verification ─────────────────────────────────────────────────
 
 @router.post("/verify-phone-otp")
@@ -255,6 +261,12 @@ def login_phone(request: Request, data: PhoneLoginRequest):
             "auth_provider": user.auth_provider,
         }
     }
+
+
+@router.post("/login", include_in_schema=False)
+def login_alias_simple(request: Request, data: PhoneLoginRequest):
+    """Alias for /login/phone."""
+    return login_phone(request, data)
 
 
 # ─── Token refresh ───────────────────────────────────────────────────────────

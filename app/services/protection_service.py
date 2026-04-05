@@ -3,8 +3,18 @@ import time
 import numpy as np
 import joblib
 import logging
+import io
+import pandas as pd
 from app.config import settings
 from app.extensions import db
+from app.models.ml_model import MLModel
+from app.models.sensor_data import SensorTrainingData
+from sklearn.preprocessing import StandardScaler
+try:
+    import lightgbm as lgb
+except Exception as e:
+    logging.warning(f"⚠️ LightGBM could not be imported: {e}. Auto-SOS predictions will be disabled.")
+    lgb = None
 
 from app.services.sos_service import trigger_sos, dispatch_sos
 
@@ -189,6 +199,13 @@ def extract_features(window, sensor_type):
         np.ndarray of shape (1, 17) ready for model.predict().
     """
     window = np.array(window, dtype=float)
+    # Validate shape: must be (N, 3) — each reading is [x, y, z]
+    if window.ndim != 2 or window.shape[1] != 3:
+        raise ValueError(
+            f"extract_features expects window shape (N, 3), got {window.shape}. "
+            "Each reading must be [x, y, z]. "
+            "Received data may be flat scalars instead of [x, y, z] triplets."
+        )
     feats = []
     for i in range(3):
         axis = window[:, i]
@@ -677,4 +694,112 @@ def submit_sos_feedback(user_id, alert_id, is_false_alarm):
     except Exception as e:
         db.session.rollback()
         logging.error(f"Failed to save SOS feedback: {e}")
+        return False, str(e)
+
+
+def retrain_model(user_id):
+    """Retrain the ML model using all verified sensor data.
+
+    1. Fetch all is_verified=True sensor data.
+    2. Group readings into windows of 300 (standardized length).
+    3. Extract 17 features from each window.
+    4. Train a LightGBM classifier.
+    5. Save the model and its metadata back to the MLModel table.
+    """
+    if lgb is None:
+        return False, "LightGBM not installed - cannot retrain model."
+
+    try:
+        # 1. Fetch all verified training data
+        records = SensorTrainingData.query.filter_by(is_verified=True).all()
+        if not records:
+            return False, "No verified training data found to train on."
+
+        # Convert to DataFrame for easier grouping
+        df = pd.DataFrame([{
+            'user_id': r.user_id,
+            'sensor_type': r.sensor_type,
+            'label': r.label,
+            'created_at': r.created_at,
+            'x': r.x, 'y': r.y, 'z': r.z
+        } for r in records])
+
+        # 2. Group into windows
+        # Goal: group by the exact batch (created_at) it was uploaded in
+        windows_features = []
+        labels = []
+
+        # We group by (user_id, sensor_type, label, created_at)
+        # Each entry in save_training_data shares these for the whole window
+        for _, group in df.groupby(['user_id', 'sensor_type', 'label', 'created_at']):
+            # We need windows of 300 readings as per step3_advanced_model_training.py
+            # If a group is smaller, we skip it (not enough signal).
+            # If larger, we only take the first 300 or chunk it.
+            readings_list = group[['x', 'y', 'z']].values.tolist()
+            
+            # Chunking logic (if user uploaded 900 points, we get 3 windows)
+            WINDOW_SIZE = 300
+            for i in range(0, len(readings_list) - WINDOW_SIZE + 1, WINDOW_SIZE):
+                window = readings_list[i : i + WINDOW_SIZE]
+                sensor_type = group['sensor_type'].iloc[0]
+                label = group['label'].iloc[0]
+                
+                # 3. Extract features
+                # Extract features expects [[x,y,z], ...] shape and sensor_type string
+                feats = extract_features(window, sensor_type)  # returns (1, 17)
+                windows_features.append(feats.flatten())
+                labels.append(label)
+
+        if not windows_features:
+            return False, "Not enough data to form complete windows (need 300 readings per event)."
+
+        X = np.array(windows_features)
+        y = np.array(labels)
+
+        # Check for class balance
+        if len(np.unique(y)) < 2:
+            return False, "Not enough variety in data (need both 'safe' and 'danger' samples to train)."
+
+        # 4. Train LightGBM
+        # We use a simple but robust config mirroring the script
+        model = lgb.LGBMClassifier(
+            n_estimators=100,
+            max_depth=5,
+            learning_rate=0.1,
+            random_state=42,
+            verbosity=-1
+        )
+        model.fit(X, y)
+
+        # 5. Calculate Accuracy (Internal set)
+        accuracy = float(model.score(X, y))
+
+        # 6. Save to DB
+        # We pickle the model object
+        with io.BytesIO() as f:
+            joblib.dump(model, f)
+            model_bytes = f.getvalue()
+
+        # Generate a new version tag (e.g. v2.0.1_20260405)
+        import time
+        version = f"v2.{int(time.time())}"
+        
+        # Deactivate old models
+        MLModel.query.filter_by(is_active=True).update({'is_active': False})
+        
+        new_model = MLModel(
+            version=version,
+            is_active=True,
+            data=model_bytes,
+            accuracy=accuracy
+        )
+        db.session.add(new_model)
+        db.session.commit()
+
+        logging.info(f"Retraining successful: {version}, accuracy={accuracy:.4f}")
+        return True, f"Model {version} trained on {len(X)} windows. Accuracy: {accuracy:.4%}"
+
+    except Exception as e:
+        db.session.rollback()
+        logging.error(f"Retrain failed: {e}")
         return False, str(e)

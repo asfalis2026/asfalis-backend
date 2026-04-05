@@ -320,14 +320,14 @@ docker system df
 curl http://localhost:5000/health
 
 # Register user
-curl -X POST http://localhost:5000/api/auth/register \
+curl -X POST http://localhost:5000/api/auth/register/phone \
   -H "Content-Type: application/json" \
-  -d '{"email":"test@example.com","password":"Test@123"}'
+  -d '{"full_name":"Test User","phone_number":"+1234567890","country":"USA","password":"SecurePass123!"}'
 
 # Login
-curl -X POST http://localhost:5000/api/auth/login \
+curl -X POST http://localhost:5000/api/auth/login/phone \
   -H "Content-Type: application/json" \
-  -d '{"email":"test@example.com","password":"Test@123"}'
+  -d '{"phone_number":"+1234567890","password":"SecurePass123!"}'
 ```
 
 ### Using Python
@@ -342,8 +342,13 @@ print(response.json())
 
 # Register
 response = requests.post(
-    f"{base_url}/api/auth/register",
-    json={"email": "test@example.com", "password": "Test@123"}
+    f"{base_url}/api/auth/register/phone",
+    json={
+        "full_name": "Test User",
+        "phone_number": "+1234567890",
+        "country": "USA",
+        "password": "SecurePass123!"
+    }
 )
 print(response.json())
 ```

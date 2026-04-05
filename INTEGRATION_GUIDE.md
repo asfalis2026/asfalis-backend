@@ -426,25 +426,26 @@ if (pm.response.code === 200) {
 GET {{BASE_URL}}/health
 ```
 
-#### Register User
+#### Register User (Phone)
 ```
-POST {{BASE_URL}}/api/auth/register
+POST {{BASE_URL}}/api/auth/register/phone
 Content-Type: application/json
 
 {
-  "phone": "+6591234567",
-  "password": "SecurePass123!",
-  "name": "Test User"
+  "full_name": "Test User",
+  "phone_number": "+6591234567",
+  "country": "Singapore",
+  "password": "SecurePass123!"
 }
 ```
 
-#### Login
+#### Login (Phone)
 ```
-POST {{BASE_URL}}/api/auth/login
+POST {{BASE_URL}}/api/auth/login/phone
 Content-Type: application/json
 
 {
-  "phone": "+6591234567",
+  "phone_number": "+6591234567",
   "password": "SecurePass123!"
 }
 ```

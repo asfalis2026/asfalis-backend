@@ -107,9 +107,20 @@ async def http_exception_handler(request: Request, exc: FastAPIHTTPException):
 
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    """Wrap FastAPI validation errors in Asfalis JSON format."""
+    # Extract first error for a cleaner response
+    errors = exc.errors()
+    msg = "Invalid request properties."
+    if errors:
+        first = errors[0]
+        # loc[0] is often 'body', loc[1] is the field name
+        field = first.get('loc', ['?'])[-1]
+        raw_msg = first.get('msg', 'Validation error')
+        msg = f"Validation failed for '{field}': {raw_msg}"
+
     return JSONResponse(
         status_code=422,
-        content={"success": False, "error": {"code": "VALIDATION_ERROR", "message": "Invalid request properties."}}
+        content={"success": False, "error": {"code": "VALIDATION_ERROR", "message": msg}}
     )
 
 
@@ -133,6 +144,7 @@ from app.sockets import location_socket  # register socket event handlers
 socketio_app = socketio.ASGIApp(sio, other_asgi_app=app)
 
 # ── Register all routers ──────────────────────────────────────────────────────
+from app import models as _all_models  # ensure all models are registered for Base.metadata.create_all()
 from app.routes import auth, user, contacts, sos, protection, location, settings, device, support
 
 app.include_router(auth.router,        prefix="/api/auth",       tags=["Auth"])

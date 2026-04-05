@@ -32,14 +32,26 @@ def update_location(user_id, lat, lng, is_sharing=False, accuracy=None):
         }
         # Emit via python-socketio AsyncServer from sync context
         try:
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                asyncio.ensure_future(
+            # Look for the main loop that should be running the FastAPI app
+            # and schedule the emit from this thread.
+            import threading
+            # We look for a shared/global loop or try to get running loop
+            loop = None
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                # No running loop in THIS thread, common for AnyIO worker threads.
+                # We can't easily emit here without a loop reference.
+                pass
+
+            if loop:
+                asyncio.run_coroutine_threadsafe(
                     socketio.emit(
                         'location_update', payload,
                         room=f"tracking_{user_id}",
                         namespace='/location'
-                    )
+                    ),
+                    loop
                 )
         except Exception as e:
             logger.warning(f"Socket emit failed (non-critical): {e}")

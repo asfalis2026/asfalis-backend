@@ -15,23 +15,24 @@ router = APIRouter()
 
 @router.post("/toggle")
 def toggle_protection(data: ToggleProtectionRequest, user_id: str = Depends(get_current_user)):
-    from app.services.protection_service import toggle_auto_sos
-    result = toggle_auto_sos(user_id, data.is_active)
-    return {"success": True, "data": result}
+    try:
+        from app.services.protection_service import toggle_protection as _toggle
+        success, msg = _toggle(user_id, data.is_active)
+        if not success:
+            raise HTTPException(500, detail={"code": "TOGGLE_ERROR", "message": msg})
+        return {"success": True, "message": msg}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to toggle protection for user {user_id}: {e}", exc_info=True)
+        raise HTTPException(500, detail={"code": "INTERNAL_ERROR", "message": str(e)})
 
 
 @router.get("/status")
 def get_protection_status(user_id: str = Depends(get_current_user)):
-    from app.services.protection_service import is_protection_active
-    from app.models.device import ConnectedDevice
-    active = is_protection_active(user_id)
-    device = ConnectedDevice.query.filter_by(user_id=user_id)\
-        .order_by(ConnectedDevice.last_seen.desc()).first()
-    return {"success": True, "data": {
-        "is_active": active,
-        "iot_connected": device.is_connected if device else False,
-        "device": device.to_dict() if device else None,
-    }}
+    from app.services.protection_service import get_protection_status as _get_status
+    status = _get_status(user_id)
+    return {"success": True, "data": status}
 
 
 @router.post("/sensor-data")
@@ -47,7 +48,7 @@ def predict_danger(data: SensorWindowRequest, user_id: str = Depends(get_current
     from app.services.protection_service import predict_from_window
     result = predict_from_window(
         user_id=user_id,
-        window=data.window,
+        window_data=data.window,
         sensor_type=data.sensor_type,
         latitude=data.latitude,
         longitude=data.longitude,

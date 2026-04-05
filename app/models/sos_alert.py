@@ -1,25 +1,27 @@
-
-from app.extensions import db
+from sqlalchemy import Column, String, Float, DateTime, Text, JSON, Enum, ForeignKey
 from datetime import datetime
 import uuid
 
-class SOSAlert(db.Model):
+from app.database import Base
+
+
+class SOSAlert(Base):
     __tablename__ = 'sos_alerts'
 
-    id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
-    user_id = db.Column(db.String(36), db.ForeignKey('users.id'), nullable=False)
-    trigger_type = db.Column(db.Enum('manual', 'auto_fall', 'auto_shake', 'bracelet', 'iot_button', name='trigger_type_enum'), nullable=False)
-    latitude = db.Column(db.Float, nullable=False)
-    longitude = db.Column(db.Float, nullable=False)
-    address = db.Column(db.String(500), nullable=True)
-    status = db.Column(db.Enum('countdown', 'sent', 'cancelled', 'resolved', name='sos_status_enum'), nullable=False)
-    sos_message = db.Column(db.Text, nullable=False)
-    contacted_numbers = db.Column(db.JSON, nullable=False)
-    triggered_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
-    sent_at = db.Column(db.DateTime, nullable=True)
-    resolved_at = db.Column(db.DateTime, nullable=True)
-    resolution_type = db.Column(db.String(50), nullable=True)  # user_marked_safe, cancelled, timeout, manual_resolution
-    trigger_reason = db.Column(db.Text, nullable=True)  # auto-SOS only: short human-readable reason (e.g. "Unusual fall detected")
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_id = Column(String(36), ForeignKey('users.id'), nullable=False)
+    trigger_type = Column(Enum('manual', 'auto_fall', 'auto_shake', 'bracelet', 'iot_button', name='trigger_type_enum'), nullable=False)
+    latitude = Column(Float, nullable=False)
+    longitude = Column(Float, nullable=False)
+    address = Column(String(500), nullable=True)
+    status = Column(Enum('countdown', 'sent', 'cancelled', 'resolved', name='sos_status_enum'), nullable=False)
+    sos_message = Column(Text, nullable=False)
+    contacted_numbers = Column(JSON, nullable=False)
+    triggered_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    sent_at = Column(DateTime, nullable=True)
+    resolved_at = Column(DateTime, nullable=True)
+    resolution_type = Column(String(50), nullable=True)
+    trigger_reason = Column(Text, nullable=True)
 
     def to_dict(self):
         return {

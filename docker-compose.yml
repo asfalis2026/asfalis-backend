@@ -2,11 +2,64 @@ services:
   web:
     build: .
     ports:
-      - "5000:5000"
+      - "8000:8000"
+
+    # Loads ALL variables from .env automatically at runtime.
+    # The .env file is gitignored — secrets never touch source control.
     env_file: .env
+
+    # These reference variables already loaded by env_file above.
+    # No secret values are hardcoded here — safe to commit.
     environment:
-      - FLASK_ENV=development
-      - VIRTUAL_ENV=/app/venv
+      # ── App ──────────────────────────────────────────────────
+      - DEBUG=${DEBUG}
+      - LOG_LEVEL=${LOG_LEVEL}
+
+      # ── Database ─────────────────────────────────────────────
+      - DATABASE_URL=${DATABASE_URL}
+
+      # ── JWT ──────────────────────────────────────────────────
+      - SECRET_KEY=${SECRET_KEY}
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY}
+      - JWT_ACCESS_TOKEN_EXPIRES=${JWT_ACCESS_TOKEN_EXPIRES}
+      - JWT_REFRESH_TOKEN_EXPIRES=${JWT_REFRESH_TOKEN_EXPIRES}
+      - JWT_SOS_TOKEN_EXPIRES_DAYS=${JWT_SOS_TOKEN_EXPIRES_DAYS}
+
+      # ── OTP ───────────────────────────────────────────────────
+      - OTP_EXPIRY_SECONDS=${OTP_EXPIRY_SECONDS}
+      - MAX_OTP_ATTEMPTS=${MAX_OTP_ATTEMPTS}
+
+      # ── Twilio SMS (Account 1) ────────────────────────────────
+      - TWILIO_ACCOUNT_SID=${TWILIO_ACCOUNT_SID}
+      - TWILIO_AUTH_TOKEN=${TWILIO_AUTH_TOKEN}
+      - TWILIO_PHONE_NUMBER=${TWILIO_PHONE_NUMBER}
+
+      # ── Twilio WhatsApp (Account 2) ───────────────────────────
+      - TWILIO_WA_ACCOUNT_SID=${TWILIO_WA_ACCOUNT_SID}
+      - TWILIO_WA_AUTH_TOKEN=${TWILIO_WA_AUTH_TOKEN}
+      - TWILIO_WHATSAPP_FROM=${TWILIO_WHATSAPP_FROM}
+      - TWILIO_SANDBOX_CODE=${TWILIO_SANDBOX_CODE}
+
+      # ── Firebase ──────────────────────────────────────────────
+      - FIREBASE_CREDENTIALS_PATH=${FIREBASE_CREDENTIALS_PATH}
+      - FIREBASE_CREDENTIALS_JSON=${FIREBASE_CREDENTIALS_JSON}
+
+      # ── Resend (Email) ────────────────────────────────────────
+      - RESEND_API_KEY=${RESEND_API_KEY}
+      - EMAIL_FROM=${EMAIL_FROM}
+      - RESEND_WEBHOOK_SECRET=${RESEND_WEBHOOK_SECRET}
+      - RESEND_AUDIENCE_ID=${RESEND_AUDIENCE_ID}
+      - CONFIRM_REDIRECT_URL=${CONFIRM_REDIRECT_URL}
+
+      # ── SOS / Safety ──────────────────────────────────────────
+      - MAX_TRUSTED_CONTACTS=${MAX_TRUSTED_CONTACTS}
+      - SOS_COOLDOWN_SECONDS=${SOS_COOLDOWN_SECONDS}
+      - SOS_COUNTDOWN_SECONDS=${SOS_COUNTDOWN_SECONDS}
+
+      # ── IMEI / IoT ────────────────────────────────────────────
+      - IMEI_BINDING_ENABLED=${IMEI_BINDING_ENABLED}
+      - IOT_DOUBLE_TAP_WINDOW_SECONDS=${IOT_DOUBLE_TAP_WINDOW_SECONDS}
+
     # Sometimes needed for DNS issues in corporate/restricted networks
     dns:
       - 8.8.8.8

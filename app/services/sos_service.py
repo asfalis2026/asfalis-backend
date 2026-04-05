@@ -1,27 +1,22 @@
-from flask import current_app
-
+from app.config import settings
 from app.extensions import db
 from app.models.sos_alert import SOSAlert
 from app.models.trusted_contact import TrustedContact
 from app.models.user import User
-from app.services.fcm_service import send_push_notification 
+from app.services.fcm_service import send_push_notification
 from app.utils.timezone_utils import format_datetime_for_display
 from datetime import datetime
 import logging
 
-COUNTDOWN_EXPIRY_SECONDS = 60  # Auto-expire stale countdown alerts after 60s
+COUNTDOWN_SECONDS = 10          # The live countdown window the app displays (seconds)
+COUNTDOWN_EXPIRY_SECONDS = 60  # Backend stale-cleanup guard — cancel if still 'countdown' after 60s
 
 
 def _get_configured_cooldown():
-    """Fetch SOS cooldown override from app config if available."""
-    try:
-        value = current_app.config.get('SOS_COOLDOWN_SECONDS')
-    except RuntimeError:
-        return None
-
+    """Fetch SOS cooldown from settings."""
+    value = getattr(settings, 'SOS_COOLDOWN_SECONDS', None)
     if value is None:
         return None
-
     try:
         return int(value)
     except (TypeError, ValueError):
@@ -63,7 +58,7 @@ def trigger_sos(user_id, lat, lng, trigger_type='manual', trigger_prefix=None, t
             return existing, f"SOS on cooldown — please wait {secs_left}s before triggering again."
         return None, f"SOS on cooldown — please wait {secs_left}s before triggering again."
 
-    user = User.query.get(user_id)
+    user = db.session.get(User, user_id)
     if not user:
         return None, "User not found"
 
@@ -112,12 +107,14 @@ def trigger_sos(user_id, lat, lng, trigger_type='manual', trigger_prefix=None, t
     mark_triggered()
 
     # Do NOT auto-dispatch here. Client controls countdown state and decides:
-    # - send-now on timeout / navigate home
-    # - mark safe for false alarm
-    return new_alert, "SOS countdown started"
+    # - POST /sos/send-now when countdown expires (no cancel received)
+    # - POST /sos/cancel during the countdown window
+    # The countdown_seconds value is passed back to the caller so the mobile
+    # app uses the server-defined window instead of a hardcoded constant.
+    return new_alert, "SOS countdown started", COUNTDOWN_SECONDS
 
 def dispatch_sos(alert_id, user_id=None):
-    alert = SOSAlert.query.get(alert_id)
+    alert = db.session.get(SOSAlert, alert_id)
     if not alert:
         return False, "Alert not found", []
 
@@ -133,7 +130,7 @@ def dispatch_sos(alert_id, user_id=None):
     if alert.status != 'countdown':
         return False, f"Alert cannot be dispatched from state: {alert.status}", []
 
-    user = User.query.get(alert.user_id)
+    user = db.session.get(User, alert.user_id)
     contacts = TrustedContact.query.filter_by(user_id=user.id).all()
 
     # Warn if none are app-verified (contact joined Twilio sandbox ≠ app OTP verified)
@@ -199,7 +196,7 @@ def dispatch_sos(alert_id, user_id=None):
     return True, summary, delivery_report
 
 def cancel_sos(alert_id, user_id=None):
-    alert = SOSAlert.query.get(alert_id)
+    alert = db.session.get(SOSAlert, alert_id)
     if not alert:
         return False, "Alert not found"
 
@@ -238,7 +235,7 @@ def mark_user_safe(alert_id, user_id):
     Returns:
         tuple: (success: bool, message: str, contacts_notified: int)
     """
-    alert = SOSAlert.query.get(alert_id)
+    alert = db.session.get(SOSAlert, alert_id)
     
     # Validation checks
     if not alert:
@@ -271,7 +268,7 @@ def mark_user_safe(alert_id, user_id):
     db.session.commit()
     
     # Get user and verified contacts
-    user = User.query.get(user_id)
+    user = db.session.get(User, user_id)
     if not user:
         return False, "User not found", 0
     

@@ -1,4 +1,3 @@
-
 import firebase_admin
 from firebase_admin import credentials, messaging
 from app.config import Config
@@ -23,22 +22,17 @@ try:
     else:
         logger.warning("Firebase credentials not found (PATH or JSON). Push notifications will not work.")
 except ValueError:
-    # App already initialized
-    pass
+    pass  # App already initialized
 except Exception as e:
     logger.error(f"Error initializing Firebase: {e}")
 
 
 def _is_firebase_ready():
-    """Check if Firebase is initialized."""
     return bool(firebase_admin._apps)
 
 
 def send_push_notification(fcm_token, title, body, data=None):
-    """
-    Send a push notification via FCM in a background thread.
-    No external task queue required.
-    """
+    """Send a push notification via FCM in a background thread."""
     if not fcm_token:
         logger.error("No FCM token provided")
         return None

@@ -1,6 +1,5 @@
-
 from twilio.rest import Client
-from flask import current_app
+from app.config import settings
 import logging
 import threading
 
@@ -8,43 +7,25 @@ logger = logging.getLogger(__name__)
 
 
 def send_sms(to, body):
-    """
-    Send an SMS message via Twilio.
-
-    When Twilio credentials are present the message is dispatched in a
-    background thread so the HTTP response is not blocked.
-
-    Returns one of:
-        "mock-sid"   – credentials not configured (dev/test mode)
-        "dispatched" – Twilio send started in background thread
-        None         – unexpected error before dispatch
-    """
+    """Send an SMS via Twilio in a background thread."""
     try:
-        account_sid = current_app.config.get('TWILIO_ACCOUNT_SID')
-        auth_token = current_app.config.get('TWILIO_AUTH_TOKEN')
-        twilio_phone = current_app.config.get('TWILIO_PHONE_NUMBER')
+        account_sid = settings.TWILIO_ACCOUNT_SID
+        auth_token = settings.TWILIO_AUTH_TOKEN
+        twilio_phone = settings.TWILIO_PHONE_NUMBER
 
         if not all([account_sid, auth_token, twilio_phone]):
             logger.warning("Twilio client not configured. Check TWILIO_* env vars.")
             logger.info(f"[MOCK SMS] To={to} | Body={body}")
             return "mock-sid"
 
-        # Capture app reference while still inside the request context
-        app = current_app._get_current_object()
-
         def _send():
-            with app.app_context():
-                try:
-                    client = Client(account_sid, auth_token)
-                    message = client.messages.create(
-                        body=body, from_=twilio_phone, to=to
-                    )
-                    logger.info(f"SMS sent to {to}: SID={message.sid}")
-                except Exception as e:
-                    logger.error(f"Twilio failed to send SMS to {to}: {e}")
-                    # Log the OTP body so developers can retrieve it from server
-                    # logs when Twilio cannot deliver (e.g. trial account limits).
-                    logger.warning(f"[DEV FALLBACK] SMS body for {to}: {body}")
+            try:
+                client = Client(account_sid, auth_token)
+                message = client.messages.create(body=body, from_=twilio_phone, to=to)
+                logger.info(f"SMS sent to {to}: SID={message.sid}")
+            except Exception as e:
+                logger.error(f"Twilio failed to send SMS to {to}: {e}")
+                logger.warning(f"[DEV FALLBACK] SMS body for {to}: {body}")
 
         t = threading.Thread(target=_send, daemon=True)
         t.start()
@@ -57,7 +38,6 @@ def send_sms(to, body):
 
 
 def send_otp_sms(phone, otp_code):
-    """Send OTP for phone authentication. Returns the send status string."""
     body = (
         f"Your Asfalis verification code is: {otp_code}. "
         f"Valid for 5 minutes. Do not share."
@@ -66,14 +46,9 @@ def send_otp_sms(phone, otp_code):
 
 
 def send_otp_via_verify(phone: str):
-    """Send OTP via Twilio Verify service.
-
-    Returns (True, sid) on success, (False, error_str) on failure.
-    Falls back to mock-success in dev when credentials are absent.
-    """
-    account_sid = current_app.config.get('TWILIO_ACCOUNT_SID')
-    auth_token = current_app.config.get('TWILIO_AUTH_TOKEN')
-    service_sid = current_app.config.get('TWILIO_VERIFY_SERVICE_SID')
+    account_sid = settings.TWILIO_ACCOUNT_SID
+    auth_token = settings.TWILIO_AUTH_TOKEN
+    service_sid = settings.TWILIO_VERIFY_SERVICE_SID
 
     if not all([account_sid, auth_token, service_sid]):
         logger.warning(f"Twilio Verify not configured — skipping OTP send to {phone} (dev mode)")
@@ -92,14 +67,9 @@ def send_otp_via_verify(phone: str):
 
 
 def check_otp_via_verify(phone: str, code: str):
-    """Check OTP via Twilio Verify VerificationCheck.
-
-    Returns (True, msg) if approved, (False, msg) otherwise.
-    Auto-approves in dev when credentials are absent.
-    """
-    account_sid = current_app.config.get('TWILIO_ACCOUNT_SID')
-    auth_token = current_app.config.get('TWILIO_AUTH_TOKEN')
-    service_sid = current_app.config.get('TWILIO_VERIFY_SERVICE_SID')
+    account_sid = settings.TWILIO_ACCOUNT_SID
+    auth_token = settings.TWILIO_AUTH_TOKEN
+    service_sid = settings.TWILIO_VERIFY_SERVICE_SID
 
     if not all([account_sid, auth_token, service_sid]):
         logger.warning(f"Twilio Verify not configured — auto-approving OTP for {phone} (dev mode)")
@@ -119,7 +89,6 @@ def check_otp_via_verify(phone: str, code: str):
 
 
 def send_sos_sms(contact_phone, user_name, message_text, location_url):
-    """Send SOS alert SMS to a trusted contact."""
     body = (
         f"🚨 Asfalis EMERGENCY ALERT 🚨\n\n"
         f"{message_text}\n\n"
@@ -131,16 +100,11 @@ def send_sos_sms(contact_phone, user_name, message_text, location_url):
 
 
 def send_sms_sync(to, body):
-    """
-    Send SMS synchronously (blocking). Used for OTP paths where we must
-    know whether delivery succeeded before returning the HTTP response.
-
-    Returns (True, sid) on success, (False, error_str) on failure.
-    """
+    """Send SMS synchronously. Returns (True, sid) or (False, error_str)."""
     try:
-        account_sid = current_app.config.get('TWILIO_ACCOUNT_SID')
-        auth_token = current_app.config.get('TWILIO_AUTH_TOKEN')
-        twilio_phone = current_app.config.get('TWILIO_PHONE_NUMBER')
+        account_sid = settings.TWILIO_ACCOUNT_SID
+        auth_token = settings.TWILIO_AUTH_TOKEN
+        twilio_phone = settings.TWILIO_PHONE_NUMBER
 
         if not all([account_sid, auth_token, twilio_phone]):
             logger.warning("Twilio not configured — cannot send SMS.")
@@ -154,17 +118,11 @@ def send_sms_sync(to, body):
 
     except Exception as e:
         logger.error(f"Twilio failed to send SMS to {to}: {e}")
-        # Log body so OTP can be recovered from server logs if needed.
         logger.warning(f"[DEV FALLBACK] SMS body for {to}: {body}")
         return False, str(e)
 
 
 def send_contact_verification_otp(phone, otp_code):
-    """Send OTP for trusted contact verification.
-
-    Returns (True, sid) on successful delivery, (False, error_str) on failure.
-    Uses synchronous sending so the caller can detect and surface Twilio errors.
-    """
     body = (
         f"Your Asfalis trusted contact verification code is: {otp_code}. "
         f"Valid for 5 minutes. Do not share."
@@ -173,17 +131,11 @@ def send_contact_verification_otp(phone, otp_code):
 
 
 def send_contact_welcome_sms(contact_phone, sender_name, twilio_number, sandbox_code):
-    """Send welcome SMS to newly verified trusted contact."""
-    # For WhatsApp links, use the proper format without the + prefix
-    # WhatsApp link format: https://wa.me/<number>?text=<message>
-    # Strip all non-numeric characters from the phone number
     clean_number = ''.join(filter(str.isdigit, twilio_number))
-    
-    # URL encode the sandbox code message
     import urllib.parse
     encoded_message = urllib.parse.quote(sandbox_code)
     whatsapp_link = f"https://wa.me/{clean_number}?text={encoded_message}"
-    
+
     body = (
         f"✅ {sender_name} added you as a trusted contact in Asfalis, "
         f"a personal safety app. You will receive emergency alerts with their "
@@ -195,4 +147,3 @@ def send_contact_welcome_sms(contact_phone, sender_name, twilio_number, sandbox_
         f"(Note: You must send the join code first to enable WhatsApp alerts)"
     )
     return send_sms(contact_phone, body)
-

@@ -1,11 +1,13 @@
+"""Pydantic schemas for the settings endpoint."""
 
-from marshmallow import Schema, fields, validate
+from typing import Optional, Literal
+from pydantic import BaseModel, Field
 
-class SettingsSchema(Schema):
-    emergency_number = fields.Str(validate=validate.Length(min=3))
-    sos_message = fields.Str(validate=validate.Length(max=500))
-    shake_sensitivity = fields.Str(validate=validate.OneOf(["low", "medium", "high"]))
-    battery_optimization = fields.Bool()
-    haptic_feedback = fields.Bool()
-    # Controls whether the device-side accelerometer/gyroscope Auto SOS is enabled
-    auto_sos_enabled = fields.Bool()
+
+class SettingsUpdateRequest(BaseModel):
+    emergency_number: Optional[str] = Field(None, min_length=3)
+    sos_message: Optional[str] = Field(None, max_length=500)
+    shake_sensitivity: Optional[Literal['low', 'medium', 'high']] = None
+    battery_optimization: Optional[bool] = None
+    haptic_feedback: Optional[bool] = None
+    auto_sos_enabled: Optional[bool] = None

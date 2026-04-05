@@ -1,9 +1,20 @@
-
 import os
 import time
 import numpy as np
 import joblib
-from flask import current_app
+import logging
+import io
+import pandas as pd
+from app.config import settings
+from app.extensions import db
+from app.models.ml_model import MLModel
+from app.models.sensor_data import SensorTrainingData
+from sklearn.preprocessing import StandardScaler
+try:
+    import lightgbm as lgb
+except Exception as e:
+    logging.warning(f"⚠️ LightGBM could not be imported: {e}. Auto-SOS predictions will be disabled.")
+    lgb = None
 
 from app.services.sos_service import trigger_sos, dispatch_sos
 
@@ -40,7 +51,6 @@ def _get_model():
         try:
             # Try loading from DB first
             from app.models.ml_model import MLModel
-            from app.extensions import db
             import io
 
             active_model = MLModel.query.filter_by(is_active=True).order_by(MLModel.created_at.desc()).first()
@@ -189,6 +199,13 @@ def extract_features(window, sensor_type):
         np.ndarray of shape (1, 17) ready for model.predict().
     """
     window = np.array(window, dtype=float)
+    # Validate shape: must be (N, 3) — each reading is [x, y, z]
+    if window.ndim != 2 or window.shape[1] != 3:
+        raise ValueError(
+            f"extract_features expects window shape (N, 3), got {window.shape}. "
+            "Each reading must be [x, y, z]. "
+            "Received data may be flat scalars instead of [x, y, z] triplets."
+        )
     feats = []
     for i in range(3):
         axis = window[:, i]
@@ -273,15 +290,15 @@ def toggle_protection(user_id, is_active):
     after a restart).
     """
     from app.models.settings import UserSettings
-    from app.extensions import db
+    # from app.extensions import db # Already imported at top
 
     # Create the settings row if it doesn't exist yet (e.g. fresh account).
-    settings = UserSettings.query.filter_by(user_id=user_id).first()
-    if not settings:
-        settings = UserSettings(user_id=user_id)
-        db.session.add(settings)
+    settings_obj = UserSettings.query.filter_by(user_id=user_id).first()
+    if not settings_obj:
+        settings_obj = UserSettings(user_id=user_id)
+        db.session.add(settings_obj)
 
-    settings.auto_sos_enabled = is_active
+    settings_obj.auto_sos_enabled = is_active
     try:
         db.session.commit()
     except Exception as e:
@@ -314,8 +331,8 @@ def _is_protection_active(user_id):
     # Slow path: DB look-up (only once per user per process lifetime)
     try:
         from app.models.settings import UserSettings
-        settings = UserSettings.query.filter_by(user_id=user_id).first()
-        if settings and settings.auto_sos_enabled:
+        settings_obj = UserSettings.query.filter_by(user_id=user_id).first()
+        if settings_obj and settings_obj.auto_sos_enabled:
             active_protection_users[user_id] = True  # warm cache
             return True
     except Exception:
@@ -377,14 +394,14 @@ def analyze_sensor_data(user_id, sensor_type, readings, sensitivity):
         predicted_label = 1 if is_danger else 0
         save_training_data(user_id, sensor_type, readings, label=predicted_label, is_verified=False)
     except Exception as e:
-        print(f"⚠️ Failed to auto-save training data: {e}")
+        logging.warning(f"⚠️ Failed to auto-save training data: {e}")
 
     if is_danger:
         # Block auto-SOS when only the uncalibrated file-fallback model is
         # loaded.  Only a DB-trained model (produced by /protection/train-model
         # on real user data) is reliable enough to trigger an emergency alert.
         if not _has_db_model():
-            current_app.logger.warning(
+            logging.warning(
                 f"Auto SOS blocked for user {user_id}: no calibrated DB model. "
                 "Complete calibration and run /protection/train-model first."
             )
@@ -400,7 +417,7 @@ def analyze_sensor_data(user_id, sensor_type, readings, sensitivity):
         from app.models.settings import UserSettings
         fresh_settings = UserSettings.query.filter_by(user_id=user_id).first()
         if not (fresh_settings and fresh_settings.auto_sos_enabled):
-            current_app.logger.info(
+            logging.info(
                 f"Auto SOS suppressed for user {user_id}: "
                 "system disarmed (fresh DB check caught race with cache)."
             )
@@ -435,12 +452,12 @@ def analyze_sensor_data(user_id, sensor_type, readings, sensitivity):
             f"⚠️ AUTO-SOS: {trigger_reason} ({int(confidence_danger * 100)}% confidence)\\n"
             f"Sensor: {sensor_type} | System was armed at time of trigger"
         )
-        alert, msg = trigger_sos(user_id, lat, lng, trigger_type=trigger_type,
+        alert, msg, _ = trigger_sos(user_id, lat, lng, trigger_type=trigger_type,
                                   trigger_prefix=trigger_prefix,
                                   trigger_reason=trigger_reason)
         _mark_sos_triggered(user_id)
 
-        current_app.logger.warning(
+        logging.warning(
             f"Auto SOS triggered for user {user_id}: {trigger_reason} "
             f"confidence={confidence_danger:.2f} sensor={sensor_type}"
         )
@@ -499,7 +516,7 @@ def predict_from_window(user_id, window_data, sensor_type='accelerometer', locat
     if prediction == 1:
         # Block auto-SOS when only the uncalibrated file-fallback model is loaded.
         if not _has_db_model():
-            current_app.logger.warning(
+            logging.warning(
                 f"Auto SOS (predict) blocked for user {user_id}: no calibrated DB model."
             )
             response["sos_sent"] = False
@@ -512,7 +529,7 @@ def predict_from_window(user_id, window_data, sensor_type='accelerometer', locat
         from app.models.settings import UserSettings
         fresh_settings = UserSettings.query.filter_by(user_id=user_id).first()
         if not (fresh_settings and fresh_settings.auto_sos_enabled):
-            current_app.logger.info(
+            logging.info(
                 f"Auto SOS (predict) suppressed for user {user_id}: "
                 "system disarmed (fresh DB check)."
             )
@@ -549,12 +566,12 @@ def predict_from_window(user_id, window_data, sensor_type='accelerometer', locat
             f"⚠️ AUTO-SOS: {trigger_reason} ({int(confidence * 100)}% confidence)\\n"
             f"Sensor: {sensor_type} | Location: {location} | System was armed"
         )
-        alert, msg = trigger_sos(user_id, lat, lng, trigger_type=trigger_type,
+        alert, msg, _ = trigger_sos(user_id, lat, lng, trigger_type=trigger_type,
                                   trigger_prefix=trigger_prefix,
                                   trigger_reason=trigger_reason)
         _mark_sos_triggered(user_id)
 
-        current_app.logger.warning(
+        logging.warning(
             f"Auto SOS (predict) countdown started for user {user_id}: "
             f"{trigger_reason} confidence={confidence:.2f} sensor={sensor_type}"
         )
@@ -570,7 +587,8 @@ def predict_from_window(user_id, window_data, sensor_type='accelerometer', locat
         response["alert_id"] = alert.id if alert else None
         response["message"] = msg
         response["trigger_reason"] = trigger_reason
-        response["countdown_seconds"] = current_app.config.get("SOS_COUNTDOWN_SECONDS", 10)
+        from app.services.sos_service import COUNTDOWN_SECONDS
+        response["countdown_seconds"] = COUNTDOWN_SECONDS
 
     else:
         response["sos_sent"] = False
@@ -614,7 +632,7 @@ def save_training_data(user_id, sensor_type, readings, label, is_verified=False)
         return True, f"Saved {len(new_records)} training records."
     except Exception as e:
         db.session.rollback()
-        current_app.logger.error(f"Failed to save training data: {e}")
+        logging.error(f"Failed to save training data: {e}")
         return False, str(e)
 
 
@@ -675,5 +693,113 @@ def submit_sos_feedback(user_id, alert_id, is_false_alarm):
         return True, f"Feedback saved — {updated} training record(s) re-labelled as {'safe' if is_false_alarm else 'danger'}."
     except Exception as e:
         db.session.rollback()
-        current_app.logger.error(f"Failed to save SOS feedback: {e}")
+        logging.error(f"Failed to save SOS feedback: {e}")
+        return False, str(e)
+
+
+def retrain_model(user_id):
+    """Retrain the ML model using all verified sensor data.
+
+    1. Fetch all is_verified=True sensor data.
+    2. Group readings into windows of 300 (standardized length).
+    3. Extract 17 features from each window.
+    4. Train a LightGBM classifier.
+    5. Save the model and its metadata back to the MLModel table.
+    """
+    if lgb is None:
+        return False, "LightGBM not installed - cannot retrain model."
+
+    try:
+        # 1. Fetch all verified training data
+        records = SensorTrainingData.query.filter_by(is_verified=True).all()
+        if not records:
+            return False, "No verified training data found to train on."
+
+        # Convert to DataFrame for easier grouping
+        df = pd.DataFrame([{
+            'user_id': r.user_id,
+            'sensor_type': r.sensor_type,
+            'label': r.label,
+            'created_at': r.created_at,
+            'x': r.x, 'y': r.y, 'z': r.z
+        } for r in records])
+
+        # 2. Group into windows
+        # Goal: group by the exact batch (created_at) it was uploaded in
+        windows_features = []
+        labels = []
+
+        # We group by (user_id, sensor_type, label, created_at)
+        # Each entry in save_training_data shares these for the whole window
+        for _, group in df.groupby(['user_id', 'sensor_type', 'label', 'created_at']):
+            # We need windows of 300 readings as per step3_advanced_model_training.py
+            # If a group is smaller, we skip it (not enough signal).
+            # If larger, we only take the first 300 or chunk it.
+            readings_list = group[['x', 'y', 'z']].values.tolist()
+            
+            # Chunking logic (if user uploaded 900 points, we get 3 windows)
+            WINDOW_SIZE = 300
+            for i in range(0, len(readings_list) - WINDOW_SIZE + 1, WINDOW_SIZE):
+                window = readings_list[i : i + WINDOW_SIZE]
+                sensor_type = group['sensor_type'].iloc[0]
+                label = group['label'].iloc[0]
+                
+                # 3. Extract features
+                # Extract features expects [[x,y,z], ...] shape and sensor_type string
+                feats = extract_features(window, sensor_type)  # returns (1, 17)
+                windows_features.append(feats.flatten())
+                labels.append(label)
+
+        if not windows_features:
+            return False, "Not enough data to form complete windows (need 300 readings per event)."
+
+        X = np.array(windows_features)
+        y = np.array(labels)
+
+        # Check for class balance
+        if len(np.unique(y)) < 2:
+            return False, "Not enough variety in data (need both 'safe' and 'danger' samples to train)."
+
+        # 4. Train LightGBM
+        # We use a simple but robust config mirroring the script
+        model = lgb.LGBMClassifier(
+            n_estimators=100,
+            max_depth=5,
+            learning_rate=0.1,
+            random_state=42,
+            verbosity=-1
+        )
+        model.fit(X, y)
+
+        # 5. Calculate Accuracy (Internal set)
+        accuracy = float(model.score(X, y))
+
+        # 6. Save to DB
+        # We pickle the model object
+        with io.BytesIO() as f:
+            joblib.dump(model, f)
+            model_bytes = f.getvalue()
+
+        # Generate a new version tag (e.g. v2.0.1_20260405)
+        import time
+        version = f"v2.{int(time.time())}"
+        
+        # Deactivate old models
+        MLModel.query.filter_by(is_active=True).update({'is_active': False})
+        
+        new_model = MLModel(
+            version=version,
+            is_active=True,
+            data=model_bytes,
+            accuracy=accuracy
+        )
+        db.session.add(new_model)
+        db.session.commit()
+
+        logging.info(f"Retraining successful: {version}, accuracy={accuracy:.4f}")
+        return True, f"Model {version} trained on {len(X)} windows. Accuracy: {accuracy:.4%}"
+
+    except Exception as e:
+        db.session.rollback()
+        logging.error(f"Retrain failed: {e}")
         return False, str(e)

@@ -1,43 +1,69 @@
+"""Pydantic schemas for the protection / Auto-SOS endpoints."""
 
-from marshmallow import Schema, fields, validate
+from typing import List, Optional, Literal, Union
+from pydantic import BaseModel, Field, field_validator
 
-class ToggleProtectionSchema(Schema):
-    is_active = fields.Bool(required=True)
 
-class SensorReadingSchema(Schema):
-    x = fields.Float(required=True)
-    y = fields.Float(required=True)
-    z = fields.Float(required=True)
-    timestamp = fields.Int(required=True)
+class ToggleProtectionRequest(BaseModel):
+    is_active: bool
 
-class SensorDataSchema(Schema):
-    sensor_type = fields.Str(required=True, validate=validate.OneOf(["accelerometer", "gyroscope"]))
-    data = fields.List(fields.Nested(SensorReadingSchema), required=True)
-    sensitivity = fields.Str(missing="medium")
 
-class SensorWindowSchema(Schema):
-    """Schema for the /predict endpoint.
+class SensorReading(BaseModel):
+    x: float
+    y: float
+    z: float
+    timestamp: int
 
-    The frontend calls this endpoint **only** when the local sensor reading
-    already exceeded the user-configured threshold.  The backend then runs
-    the ML model and, if danger is predicted, triggers an Auto SOS countdown.
+
+class SensorDataRequest(BaseModel):
+    sensor_type: Literal['accelerometer', 'gyroscope']
+    data: List[SensorReading]
+    sensitivity: str = 'medium'
+
+
+class SensorWindowRequest(BaseModel):
+    """Request body for the /predict endpoint.
+
+    ``window`` must be a list of [x, y, z] triplets, e.g.:
+        [[0.1, -0.2, 9.8], [0.3, -0.1, 9.7], ...]
     """
-    # Pre-filtered window of [x, y, z] readings
-    window = fields.List(
-        fields.List(fields.Float(), required=True),
-        required=True,
-        validate=validate.Length(min=3)
-    )
-    # Which sensor produced the reading
-    sensor_type = fields.Str(
-        missing='accelerometer',
-        validate=validate.OneOf(['accelerometer', 'gyroscope'])
-    )
-    location = fields.Str(missing="Unknown")
-    latitude = fields.Float(load_default=None, allow_none=True)
-    longitude = fields.Float(load_default=None, allow_none=True)
+    window: List[List[float]] = Field(..., min_length=3)
+    sensor_type: Literal['accelerometer', 'gyroscope'] = 'accelerometer'
+    location: str = 'Unknown'
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
 
-class SensorTrainingSchema(Schema):
-    sensor_type = fields.Str(required=True, validate=validate.OneOf(["accelerometer", "gyroscope"]))
-    data = fields.List(fields.Nested(SensorReadingSchema), required=True)
-    label = fields.Int(required=True, validate=validate.OneOf([0, 1])) # 0=Safe, 1=Danger
+    @field_validator('window')
+    @classmethod
+    def validate_window_shape(cls, v):
+        for i, reading in enumerate(v):
+            if len(reading) != 3:
+                raise ValueError(
+                    f"window[{i}] must have exactly 3 values [x, y, z], "
+                    f"got {len(reading)}: {reading}"
+                )
+        return v
+
+
+class SensorTrainingRequest(BaseModel):
+    """Request body for the /collect endpoint."""
+    sensor_type: Literal['accelerometer', 'gyroscope']
+    data: List[SensorReading]
+    label: Union[int, str]
+
+    @field_validator('label')
+    @classmethod
+    def normalize_label(cls, v):
+        """Map descriptive strings to 0/1 integers for the ML model."""
+        if isinstance(v, int):
+            if v in [0, 1]:
+                return v
+            raise ValueError("Integer label must be 0 (Safe) or 1 (Danger).")
+        
+        s = str(v).lower().strip()
+        if s in ['fall', 'danger', 'true_positive', 'alert', '1']:
+            return 1
+        if s in ['safe', 'normal', 'false_positive', 'ok', 'no_fall', '0']:
+            return 0
+            
+        raise ValueError(f"Invalid label '{v}'. Use 0/1 or 'safe'/'fall'.")

@@ -4,15 +4,18 @@ FROM python:3.12-slim
 WORKDIR /app
 
 COPY requirements.txt .
-RUN pip install psycopg2-binary
 RUN pip install --no-cache-dir -r requirements.txt
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libgomp1 \
+    && rm -rf /var/lib/apt/lists/*
 
 COPY . .
 
-EXPOSE 5000
+EXPOSE 8000
 
 COPY entrypoint.sh .
-RUN chmod +x entrypoint.sh
+RUN sed -i 's/\r//' entrypoint.sh && chmod +x entrypoint.sh
 
 ENTRYPOINT ["./entrypoint.sh"]
-CMD ["gunicorn", "--log-level", "info", "--access-logfile", "-", "-w", "1", "--threads", "4", "--bind", "0.0.0.0:5000", "wsgi:app"]
+CMD ["uvicorn", "wsgi:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]

@@ -4,7 +4,6 @@ import numpy as np
 import joblib
 import logging
 import io
-import pandas as pd
 from app.config import settings
 from app.extensions import db
 from app.models.ml_model import MLModel
@@ -16,7 +15,7 @@ except Exception as e:
     logging.warning(f"⚠️ LightGBM could not be imported: {e}. Auto-SOS predictions will be disabled.")
     lgb = None
 
-from app.services.sos_service import trigger_sos, dispatch_sos
+from app.services.sos_service import trigger_sos
 
 # ---------------------------------------------------------------------------
 # Model loading (once at import time)
@@ -184,50 +183,86 @@ def _clear_manual_cooldown(user_id):
 # ---------------------------------------------------------------------------
 # Feature extraction (mirrors data_train.py exactly)
 # ---------------------------------------------------------------------------
-def extract_features(window, sensor_type):
-    """Extract 17 statistical features from a sensor window.
-    
-    Features:
-    - 15 statistical features from (x, y, z)
-    - 2 One-Hot encoded features for sensor_type: [is_accel, is_gyro]
+def extract_features(window):
+    """Extract 39 statistical features from a 300-reading sensor window.
+
+    The feature set matches the ``labeled_windows.csv`` schema produced by the
+    ML data pipeline and is the canonical representation used for both model
+    training (``retrain_model``) and inference (``predict_danger``).
+
+    Features (39 total):
+      Per-axis (x, y, z): mean, std, min, max, range, median, iqr, rms  → 24
+      Magnitude:          mean, std, min, max, range, median, iqr, rms  →  8
+      Cross-correlations: xy_corr, xz_corr, yz_corr                    →  3
 
     Args:
-        window: np.ndarray of shape (N, 3) — N readings of [x, y, z].
-        sensor_type: str ('accelerometer' or 'gyroscope')
+        window: array-like of shape (N, 3) — N readings of [x, y, z].
 
     Returns:
-        np.ndarray of shape (1, 17) ready for model.predict().
+        np.ndarray of shape (1, 39) ready for model.predict().
+        dict of named features (for DB persistence).
     """
     window = np.array(window, dtype=float)
-    # Validate shape: must be (N, 3) — each reading is [x, y, z]
     if window.ndim != 2 or window.shape[1] != 3:
         raise ValueError(
             f"extract_features expects window shape (N, 3), got {window.shape}. "
-            "Each reading must be [x, y, z]. "
-            "Received data may be flat scalars instead of [x, y, z] triplets."
+            "Each reading must be [x, y, z]."
         )
-    feats = []
-    for i in range(3):
-        axis = window[:, i]
-        feats += [axis.mean(), axis.std(), axis.max(), axis.min(), np.sum(axis ** 2)]
-    
-    # One-Hot Encoding for Sensor Type
-    if sensor_type == 'accelerometer':
-        feats += [1, 0]
-    elif sensor_type == 'gyroscope':
-        feats += [0, 1]
-    else:
-        feats += [0, 0] # Unknown
-        
-    return np.array(feats).reshape(1, -1)
+
+    x, y, z = window[:, 0], window[:, 1], window[:, 2]
+    mag = np.sqrt(x ** 2 + y ** 2 + z ** 2)
+
+    def _axis_stats(a):
+        q75, q25 = np.percentile(a, [75, 25])
+        return [
+            float(a.mean()),
+            float(a.std()),
+            float(a.min()),
+            float(a.max()),
+            float(a.max() - a.min()),   # range
+            float(np.median(a)),
+            float(q75 - q25),           # IQR
+            float(np.sqrt(np.mean(a ** 2))),  # RMS
+        ]
+
+    xs  = _axis_stats(x)
+    ys  = _axis_stats(y)
+    zs  = _axis_stats(z)
+    ms  = _axis_stats(mag)
+
+    # Pearson correlations (clip to [-1, 1] to guard against NaN on constant axes)
+    def _safe_corr(a, b):
+        if a.std() == 0 or b.std() == 0:
+            return 0.0
+        return float(np.corrcoef(a, b)[0, 1])
+
+    xy_corr = _safe_corr(x, y)
+    xz_corr = _safe_corr(x, z)
+    yz_corr = _safe_corr(y, z)
+
+    feature_vector = np.array(xs + ys + zs + ms + [xy_corr, xz_corr, yz_corr]).reshape(1, -1)
+
+    # Named dict for DB persistence (matches SensorTrainingData columns exactly)
+    named = {
+        'x_mean':   xs[0], 'x_std':    xs[1], 'x_min':    xs[2], 'x_max':    xs[3],
+        'x_range':  xs[4], 'x_median': xs[5], 'x_iqr':    xs[6], 'x_rms':    xs[7],
+        'y_mean':   ys[0], 'y_std':    ys[1], 'y_min':    ys[2], 'y_max':    ys[3],
+        'y_range':  ys[4], 'y_median': ys[5], 'y_iqr':    ys[6], 'y_rms':    ys[7],
+        'z_mean':   zs[0], 'z_std':    zs[1], 'z_min':    zs[2], 'z_max':    zs[3],
+        'z_range':  zs[4], 'z_median': zs[5], 'z_iqr':    zs[6], 'z_rms':    zs[7],
+        'mag_mean': ms[0], 'mag_std':  ms[1], 'mag_min':  ms[2], 'mag_max':  ms[3],
+        'mag_range':ms[4], 'mag_median':ms[5],'mag_iqr':  ms[6], 'mag_rms':  ms[7],
+        'xy_corr': xy_corr, 'xz_corr': xz_corr, 'yz_corr': yz_corr,
+    }
+
+    return feature_vector, named
 
 
-def predict_danger(window_data, sensor_type='accelerometer'):
+def predict_danger(window_data):
     """Run the ML model on a sensor window.
 
     Args:
-        window_data: list of [x, y, z] lists.
-        sensor_type: str ('accelerometer' or 'gyroscope')
+        window_data: list of [x, y, z] lists (300 readings).
 
     Returns:
         (prediction, confidence) — prediction is 0 (safe) or 1 (danger).
@@ -236,39 +271,31 @@ def predict_danger(window_data, sensor_type='accelerometer'):
     if model is None:
         return 0, 0.0
 
-    features = extract_features(window_data, sensor_type)  # shape (1, 17)
+    features, _ = extract_features(window_data)  # shape (1, 39)
 
-    # ---------------------------------------------------------------------------
-    # Feature-count compatibility shim
-    # ---------------------------------------------------------------------------
-    # The model stored in the DB may have been trained before the two one-hot
-    # sensor-type columns were added to extract_features() (i.e. trained on 15
-    # features).  sklearn raises a hard ValueError when the column count doesn't
-    # match n_features_in_.  We detect this at runtime and trim the feature
-    # vector to match what the current model actually expects, so old models keep
-    # working without requiring an immediate retrain.
-    # Once the model is retrained via /protection/train-model (which now calls
-    # extract_features() and therefore produces 17 features), this shim becomes
-    # a no-op automatically.
+    # -----------------------------------------------------------------------
+    # Feature-count shim: old models (17 features) still work until retrained
+    # -----------------------------------------------------------------------
     expected_n = getattr(model, 'n_features_in_', None)
     if expected_n is not None and features.shape[1] != expected_n:
         features = features[:, :expected_n]
 
-    # ---------------------------------------------------------------------------
+    # -----------------------------------------------------------------------
     # Apply StandardScaler normalization (required by LightGBM model)
-    # ---------------------------------------------------------------------------
+    # -----------------------------------------------------------------------
     scaler = _load_scaler()
     if scaler is not None:
-        features = scaler.transform(features)
+        try:
+            features = scaler.transform(features)
+        except Exception:
+            pass  # If scaler and feature dims mismatch, proceed unscaled
 
-    # Get probability if the model supports it
     confidence = 0.0
     prediction = 0
 
     if hasattr(model, 'predict_proba'):
         proba = model.predict_proba(features)[0]
-        # proba is [prob_safe, prob_danger]
-        confidence = float(proba[1])  # Probability of Danger
+        confidence = float(proba[1])  # P(danger)
         prediction = 1 if confidence > 0.5 else 0
     else:
         prediction = int(model.predict(features)[0])
@@ -358,9 +385,21 @@ def get_protection_status(user_id):
 def analyze_sensor_data(user_id, sensor_type, readings, sensitivity):
     """Analyze incoming sensor readings using the ML model.
 
-    This uses probability thresholds based on sensitivity.
-    High Sensitivity -> Trigger on lower confidence (e.g., > 30%)
-    Low Sensitivity -> Trigger only on high confidence (e.g., > 80%)
+    Flow 2 (Auto SOS):
+      1. Extract features from the 300-reading window.
+      2. Run ML inference with sensitivity-based threshold.
+      3. If DANGER → start 10-second countdown (DO NOT dispatch immediately).
+      4. Send FCM push so the app shows the cancel UI regardless of state.
+      5. Auto-save the window as training data for future retraining.
+      6. Return alert_id + countdown_seconds to the app.
+
+    The app is responsible for calling /sos/send-now when the timer expires
+    without a cancel, or /sos/cancel if the user dismisses the alert.
+
+    Sensitivity thresholds:
+      high   → trigger at > 35% danger probability
+      medium → trigger at > 60%
+      low    → trigger at > 85%
     """
     if not _is_protection_active(user_id):
         return {"alert_triggered": False, "confidence": 0.0}
@@ -368,63 +407,49 @@ def analyze_sensor_data(user_id, sensor_type, readings, sensitivity):
     # Convert [{x, y, z, timestamp}, ...] into [[x, y, z], ...]
     window_data = [[r['x'], r['y'], r['z']] for r in readings]
 
-    # Predict
-    # strict_prediction is just based on 0.5 cutoff, but we use confidence for sensitivity
-    strict_prediction, confidence_danger = predict_danger(window_data, sensor_type)
+    strict_prediction, confidence_danger = predict_danger(window_data)
 
-    # Sensitivity Thresholds
-    # Lower threshold = Easier to trigger (Higher sensitivity)
     thresholds = {
-        "high": 0.35,   # Trigger if > 35% chance of danger
-        "medium": 0.60, # Trigger if > 60% chance
-        "low": 0.85     # Trigger if > 85% chance
+        "high":   0.35,
+        "medium": 0.60,
+        "low":    0.85,
     }
-    
     threshold = thresholds.get(sensitivity.lower(), 0.60)
     is_danger = confidence_danger >= threshold
 
     # -------------------------------------------------------
-    # AUTO-LABELING (Save data for retraining)
+    # AUTO-LABELING — persist window features for retraining
     # -------------------------------------------------------
-    # We allow the model to learn from its own decisions (Self-Training Loop)
-    # Ideally, user would verify this (True Positive/False Positive).
-    # ensure we don't block the thread
     try:
-        # Determine label: 1 if we think it's danger, 0 otherwise
         predicted_label = 1 if is_danger else 0
-        save_training_data(user_id, sensor_type, readings, label=predicted_label, is_verified=False)
+        save_training_data(user_id, window_data, label=predicted_label, is_verified=False)
     except Exception as e:
         logging.warning(f"⚠️ Failed to auto-save training data: {e}")
 
     if is_danger:
-        # Block auto-SOS when only the uncalibrated file-fallback model is
-        # loaded.  Only a DB-trained model (produced by /protection/train-model
-        # on real user data) is reliable enough to trigger an emergency alert.
+        # Block until a calibrated DB model is available
         if not _has_db_model():
             logging.warning(
-                f"Auto SOS blocked for user {user_id}: no calibrated DB model. "
-                "Complete calibration and run /protection/train-model first."
+                f"Auto SOS blocked for user {user_id}: no calibrated DB model."
             )
             return {
                 "alert_triggered": False,
                 "confidence": confidence_danger,
                 "message": "Auto SOS suspended: model not calibrated. Complete calibration first.",
-                "trigger_reason": "model_not_calibrated"
+                "trigger_reason": "model_not_calibrated",
             }
 
-        # Fresh DB check — guards against race conditions where the user
-        # disarmed between the top-of-function cache check and here.
+        # Race-condition guard: user may have disarmed between cache check and now
         from app.models.settings import UserSettings
         fresh_settings = UserSettings.query.filter_by(user_id=user_id).first()
         if not (fresh_settings and fresh_settings.auto_sos_enabled):
-            logging.info(
-                f"Auto SOS suppressed for user {user_id}: "
-                "system disarmed (fresh DB check caught race with cache)."
-            )
-            return {"alert_triggered": False, "confidence": confidence_danger,
-                    "message": "Auto SOS suppressed: system is disarmed."}
+            logging.info(f"Auto SOS suppressed for user {user_id}: system disarmed.")
+            return {
+                "alert_triggered": False,
+                "confidence": confidence_danger,
+                "message": "Auto SOS suppressed: system is disarmed.",
+            }
 
-        # Check cooldown before triggering SOS
         on_cooldown, secs_left = _is_on_cooldown(user_id)
         if on_cooldown:
             mins_left = (secs_left + 59) // 60
@@ -432,10 +457,9 @@ def analyze_sensor_data(user_id, sensor_type, readings, sensitivity):
                 "alert_triggered": False,
                 "confidence": confidence_danger,
                 "message": f"Auto SOS rate-limited. Next trigger allowed in {mins_left} min.",
-                "retry_after_seconds": secs_left
+                "retry_after_seconds": secs_left,
             }
 
-        # Resolve GPS coordinates
         from app.services.location_service import get_last_location
         last_loc = get_last_location(user_id)
         lat = last_loc.latitude if last_loc else 0.0
@@ -446,36 +470,54 @@ def analyze_sensor_data(user_id, sensor_type, readings, sensitivity):
             "Unusual fall detected" if sensor_type == "accelerometer"
             else "Unusual shake/motion detected"
         )
-        # Embed the trigger reason in the alert's SOS message so it appears
-        # in the WhatsApp notification when dispatch_sos is called.
         trigger_prefix = (
-            f"⚠️ AUTO-SOS: {trigger_reason} ({int(confidence_danger * 100)}% confidence)\\n"
+            f"⚠️ AUTO-SOS: {trigger_reason} ({int(confidence_danger * 100)}% confidence)\n"
             f"Sensor: {sensor_type} | System was armed at time of trigger"
         )
-        alert, msg, _ = trigger_sos(user_id, lat, lng, trigger_type=trigger_type,
-                                  trigger_prefix=trigger_prefix,
-                                  trigger_reason=trigger_reason)
+        alert, msg, countdown_seconds = trigger_sos(
+            user_id, lat, lng,
+            trigger_type=trigger_type,
+            trigger_prefix=trigger_prefix,
+            trigger_reason=trigger_reason,
+        )
         _mark_sos_triggered(user_id)
 
         logging.warning(
-            f"Auto SOS triggered for user {user_id}: {trigger_reason} "
+            f"Auto SOS countdown started for user {user_id}: {trigger_reason} "
             f"confidence={confidence_danger:.2f} sensor={sensor_type}"
         )
 
-        # Dispatch immediately via the standard dispatch_sos path so that:
-        # 1. Alert status transitions countdown -> sent (visible correctly in history)
-        # 2. WhatsApp body includes the trigger reason (via trigger_prefix in sos_message)
-        # 3. Delivery errors are captured in delivery_report
-        delivery_report = []
+        # -------------------------------------------------------------------
+        # FCM push — lets app surface cancel UI even when backgrounded
+        # -------------------------------------------------------------------
         if alert:
-            _, _, delivery_report = dispatch_sos(alert.id, user_id)
+            try:
+                from app.services.fcm_service import send_push_notification
+                from app.models.user import User
+                user = db.session.get(User, user_id)
+                if user and user.fcm_token:
+                    send_push_notification(
+                        fcm_token=user.fcm_token,
+                        title="⚠️ Auto SOS Triggered",
+                        body=f"{trigger_reason} — tap to cancel within {countdown_seconds}s",
+                        data={
+                            "type":             "AUTO_SOS_COUNTDOWN",
+                            "alert_id":         str(alert.id),
+                            "countdown_seconds": str(countdown_seconds),
+                        },
+                    )
+            except Exception as fcm_err:
+                logging.warning(f"FCM push failed (non-fatal): {fcm_err}")
 
+        # ⚠️  DO NOT call dispatch_sos() here.
+        # The app receives alert_id + countdown_seconds, shows the cancel UI,
+        # and calls POST /sos/send-now if the countdown elapses without cancel.
         return {
-            "alert_triggered": True,
-            "alert_id": alert.id if alert else None,
-            "confidence": confidence_danger,
-            "trigger_reason": trigger_reason,
-            "delivery_report": delivery_report
+            "alert_triggered":   True,
+            "alert_id":          alert.id if alert else None,
+            "confidence":        confidence_danger,
+            "trigger_reason":    trigger_reason,
+            "countdown_seconds": countdown_seconds,
         }
 
     return {"alert_triggered": False, "confidence": confidence_danger}
@@ -484,60 +526,54 @@ def analyze_sensor_data(user_id, sensor_type, readings, sensitivity):
 def predict_from_window(user_id, window_data, sensor_type='accelerometer', location="Unknown", latitude=None, longitude=None):
     """Direct window-based prediction for the Auto SOS pipeline.
 
-    Called by the frontend **after** the local threshold check fires —
-    i.e. the raw sensor magnitude already exceeded the user-configured
-    threshold on-device.  This function runs the ML model and, if danger
-    is predicted, starts an SOS countdown.
+    Called by the app after its local threshold check fires (magnitude
+    exceeded user-configured threshold on-device). Runs ML inference and,
+    if DANGER is predicted, starts the 10-second cancellation countdown.
+    An FCM push is sent so the app can show the cancel UI even when
+    backgrounded.
+
+    The app MUST call POST /sos/send-now if the countdown elapses without
+    a cancel, or POST /sos/cancel if the user dismisses the alert.
 
     Args:
-        user_id: The authenticated user's ID.
-        window_data: list of [x, y, z] lists (pre-filtered by the client).
-        sensor_type: 'accelerometer' or 'gyroscope' — determines trigger label.
-        location: Optional human-readable location string.
-        latitude: GPS latitude from the device (preferred over DB fallback).
-        longitude: GPS longitude from the device (preferred over DB fallback).
+        user_id:     Authenticated user's ID.
+        window_data: [[x, y, z], ...] — 300 readings pre-filtered by client.
+        sensor_type: 'accelerometer' | 'gyroscope' — determines trigger label.
+        location:    Optional human-readable location string.
+        latitude:    GPS latitude from device (preferred over DB fallback).
+        longitude:   GPS longitude from device (preferred over DB fallback).
 
     Returns:
-        dict with prediction result and SOS status.
+        dict with prediction result and SOS countdown status.
     """
-    # Guard: only process if Auto SOS is toggled on
     if not _is_protection_active(user_id):
         return {
             "prediction": 0,
             "confidence": 0.0,
             "sos_sent": False,
-            "message": "Auto SOS is not enabled. Toggle it on first."
+            "message": "Auto SOS is not enabled. Toggle it on first.",
         }
 
-    prediction, confidence = predict_danger(window_data, sensor_type)
+    prediction, confidence = predict_danger(window_data)
 
     response = {"prediction": prediction, "confidence": confidence, "sensor_type": sensor_type}
 
     if prediction == 1:
-        # Block auto-SOS when only the uncalibrated file-fallback model is loaded.
         if not _has_db_model():
-            logging.warning(
-                f"Auto SOS (predict) blocked for user {user_id}: no calibrated DB model."
-            )
+            logging.warning(f"Auto SOS (predict) blocked for user {user_id}: no calibrated DB model.")
             response["sos_sent"] = False
             response["message"] = "Auto SOS suspended: model not calibrated. Complete calibration first."
             response["trigger_reason"] = "model_not_calibrated"
             return response
 
-        # Fresh DB check — guards against the user disarming between the
-        # top-of-function cache check and this point (race condition).
         from app.models.settings import UserSettings
         fresh_settings = UserSettings.query.filter_by(user_id=user_id).first()
         if not (fresh_settings and fresh_settings.auto_sos_enabled):
-            logging.info(
-                f"Auto SOS (predict) suppressed for user {user_id}: "
-                "system disarmed (fresh DB check)."
-            )
+            logging.info(f"Auto SOS (predict) suppressed for user {user_id}: system disarmed.")
             response["sos_sent"] = False
             response["message"] = "Auto SOS suppressed: system is disarmed."
             return response
 
-        # Check cooldown
         on_cooldown, secs_left = _is_on_cooldown(user_id)
         if on_cooldown:
             mins_left = (secs_left + 59) // 60
@@ -546,7 +582,6 @@ def predict_from_window(user_id, window_data, sensor_type='accelerometer', locat
             response["retry_after_seconds"] = secs_left
             return response
 
-        # Resolve coordinates: prefer device-supplied GPS, fall back to DB
         if latitude is not None and longitude is not None:
             lat, lng = latitude, longitude
         else:
@@ -560,15 +595,16 @@ def predict_from_window(user_id, window_data, sensor_type='accelerometer', locat
             "Unusual fall detected" if sensor_type == "accelerometer"
             else "Unusual shake/motion detected"
         )
-        # Embed the trigger reason in the alert's SOS message so it appears
-        # in the WhatsApp notification when /send-now -> dispatch_sos fires.
         trigger_prefix = (
-            f"⚠️ AUTO-SOS: {trigger_reason} ({int(confidence * 100)}% confidence)\\n"
+            f"⚠️ AUTO-SOS: {trigger_reason} ({int(confidence * 100)}% confidence)\n"
             f"Sensor: {sensor_type} | Location: {location} | System was armed"
         )
-        alert, msg, _ = trigger_sos(user_id, lat, lng, trigger_type=trigger_type,
-                                  trigger_prefix=trigger_prefix,
-                                  trigger_reason=trigger_reason)
+        alert, msg, countdown_seconds = trigger_sos(
+            user_id, lat, lng,
+            trigger_type=trigger_type,
+            trigger_prefix=trigger_prefix,
+            trigger_reason=trigger_reason,
+        )
         _mark_sos_triggered(user_id)
 
         logging.warning(
@@ -576,19 +612,33 @@ def predict_from_window(user_id, window_data, sensor_type='accelerometer', locat
             f"{trigger_reason} confidence={confidence:.2f} sensor={sensor_type}"
         )
 
-        # Do NOT dispatch (send WhatsApp) here.
-        # The frontend receives the alert_id and shows a cancellation countdown.
-        # If not cancelled, the frontend calls /sos/send-now which invokes
-        # dispatch_sos — this ensures:
-        #   • Alert status correctly transitions countdown -> sent in history
-        #   • WhatsApp body includes the trigger reason (stored in sos_message)
-        #   • No double-dispatch (contacts previously received TWO messages)
+        # -------------------------------------------------------------------
+        # FCM push — ensures app surfaces cancel UI when backgrounded
+        # -------------------------------------------------------------------
+        if alert:
+            try:
+                from app.services.fcm_service import send_push_notification
+                from app.models.user import User
+                user = db.session.get(User, user_id)
+                if user and user.fcm_token:
+                    send_push_notification(
+                        fcm_token=user.fcm_token,
+                        title="⚠️ Auto SOS Triggered",
+                        body=f"{trigger_reason} — tap to cancel within {countdown_seconds}s",
+                        data={
+                            "type":             "AUTO_SOS_COUNTDOWN",
+                            "alert_id":         str(alert.id),
+                            "countdown_seconds": str(countdown_seconds),
+                        },
+                    )
+            except Exception as fcm_err:
+                logging.warning(f"FCM push failed (non-fatal): {fcm_err}")
+
         response["sos_sent"] = True
         response["alert_id"] = alert.id if alert else None
         response["message"] = msg
         response["trigger_reason"] = trigger_reason
-        from app.services.sos_service import COUNTDOWN_SECONDS
-        response["countdown_seconds"] = COUNTDOWN_SECONDS
+        response["countdown_seconds"] = countdown_seconds
 
     else:
         response["sos_sent"] = False
@@ -599,37 +649,52 @@ def predict_from_window(user_id, window_data, sensor_type='accelerometer', locat
 # ---------------------------------------------------------------------------
 # Data Collection / RL
 # ---------------------------------------------------------------------------
-def save_training_data(user_id, sensor_type, readings, label, is_verified=False):
-    """Save raw sensor data for future model training.
-    
+def save_training_data(
+    user_id,
+    window_data,
+    label,
+    is_verified=False,
+    dataset_name=None,
+    motion_description=None,
+    sos_alert_id=None,
+):
+    """Extract features from a sensor window and persist one training row.
+
+    Each call stores exactly **one** ``SensorTrainingData`` row representing
+    the 39 statistical features of the full window.  This replaces the old
+    per-reading approach and aligns with the ``labeled_windows.csv`` schema.
+
     Args:
-        user_id: User ID
-        sensor_type: 'accelerometer' or 'gyroscope'
-        readings: List of {x, y, z, timestamp}
-        label: 0 (Safe) or 1 (Danger)
-        is_verified: boolean, true if manually corrected by user
+        user_id:           Authenticated user ID.
+        window_data:       list of [x, y, z] triplets (ideally 300 readings).
+        label:             0 = SAFE, 1 = DANGER.
+        is_verified:       True if the label was confirmed by the user.
+        dataset_name:      Optional motion category tag (e.g. 'fast_walking').
+        motion_description: Optional free-text description.
+        sos_alert_id:      Optional SOSAlert UUID — links the window to the
+                           alert that triggered / confirmed it.
+
+    Returns:
+        (success: bool, message: str)
     """
     from app.models.sensor_data import SensorTrainingData
     from app.extensions import db
-    
+
     try:
-        new_records = []
-        for r in readings:
-            record = SensorTrainingData(
-                user_id=user_id,
-                sensor_type=sensor_type,
-                timestamp=r['timestamp'],
-                x=r['x'],
-                y=r['y'],
-                z=r['z'],
-                label=label,
-                is_verified=is_verified
-            )
-            new_records.append(record)
-        
-        db.session.add_all(new_records)
+        _, named = extract_features(window_data)
+
+        record = SensorTrainingData(
+            user_id=user_id,
+            danger_label=int(label),
+            is_verified=is_verified,
+            dataset_name=dataset_name,
+            motion_description=motion_description,
+            sos_alert_id=sos_alert_id,
+            **named,
+        )
+        db.session.add(record)
         db.session.commit()
-        return True, f"Saved {len(new_records)} training records."
+        return True, "Saved 1 window-level training record."
     except Exception as e:
         db.session.rollback()
         logging.error(f"Failed to save training data: {e}")
@@ -639,16 +704,18 @@ def save_training_data(user_id, sensor_type, readings, label, is_verified=False)
 def submit_sos_feedback(user_id, alert_id, is_false_alarm):
     """Record user feedback after an Auto SOS event.
 
-    When the user confirms the SOS was a false alarm (``is_false_alarm=True``)
-    or a genuine danger (``is_false_alarm=False``), we re-label the sensor data
-    that was captured around that alert so the ML model can learn from the
-    correction on the next training run.
+    Finds the ``SensorTrainingData`` window row linked to this alert via
+    ``sos_alert_id`` and updates its label so the ML model learns from the
+    user's correction on the next training run.
+
+    Flow 2 (Cancel path):
+      - ``is_false_alarm=True``  → re-label the window as SAFE (0)
+      - ``is_false_alarm=False`` → confirm as DANGER (1)
 
     Args:
         user_id:        Authenticated user ID.
         alert_id:       SOSAlert UUID that the feedback refers to.
-        is_false_alarm: True  → user says it was NOT danger (label 0).
-                        False → user confirms it WAS danger (label 1).
+        is_false_alarm: True → NOT danger (label 0); False → IS danger (label 1).
 
     Returns:
         (success: bool, message: str)
@@ -661,28 +728,38 @@ def submit_sos_feedback(user_id, alert_id, is_false_alarm):
     if not alert:
         return False, "Alert not found or does not belong to you"
 
-    # Determine the correct label from feedback
     correct_label = 0 if is_false_alarm else 1
+    label_text = 'safe' if is_false_alarm else 'danger'
 
     try:
-        # Find the unverified sensor records captured around this alert's timestamp
-        from datetime import timedelta
-        window_start = alert.triggered_at - timedelta(seconds=5)
-        window_end   = alert.triggered_at + timedelta(seconds=5)
+        # Primary: find the window row directly linked to this alert
+        record = SensorTrainingData.query.filter_by(
+            sos_alert_id=alert_id,
+            user_id=user_id,
+        ).first()
 
-        records = SensorTrainingData.query.filter(
-            SensorTrainingData.user_id == user_id,
-            SensorTrainingData.is_verified == False,  # noqa: E712
-            SensorTrainingData.created_at.between(window_start, window_end)
-        ).all()
-
-        updated = 0
-        for record in records:
-            record.label = correct_label
+        if record:
+            record.danger_label = correct_label
             record.is_verified = True
-            updated += 1
+            updated = 1
+        else:
+            # Fallback: match by timestamp proximity (±5s) for windows that
+            # were saved before sos_alert_id linkage was implemented
+            from datetime import timedelta
+            window_start = alert.triggered_at - timedelta(seconds=5)
+            window_end   = alert.triggered_at + timedelta(seconds=5)
+            records = SensorTrainingData.query.filter(
+                SensorTrainingData.user_id == user_id,
+                SensorTrainingData.is_verified == False,  # noqa: E712
+                SensorTrainingData.created_at.between(window_start, window_end)
+            ).all()
+            updated = 0
+            for r in records:
+                r.danger_label = correct_label
+                r.is_verified = True
+                updated += 1
 
-        # If the alert was a false alarm and it's still in countdown, cancel it
+        # If the alert was a false alarm and still counting down, cancel it
         if is_false_alarm and alert.status == 'countdown':
             alert.status = 'cancelled'
             from datetime import datetime
@@ -690,7 +767,7 @@ def submit_sos_feedback(user_id, alert_id, is_false_alarm):
             alert.resolution_type = 'false_alarm'
 
         db.session.commit()
-        return True, f"Feedback saved — {updated} training record(s) re-labelled as {'safe' if is_false_alarm else 'danger'}."
+        return True, f"Feedback saved — {updated} window record(s) re-labelled as {label_text}."
     except Exception as e:
         db.session.rollback()
         logging.error(f"Failed to save SOS feedback: {e}")
@@ -698,105 +775,65 @@ def submit_sos_feedback(user_id, alert_id, is_false_alarm):
 
 
 def retrain_model(user_id):
-    """Retrain the ML model using all verified sensor data.
+    """Retrain the ML model using verified window-level feature rows.
 
-    1. Fetch all is_verified=True sensor data.
-    2. Group readings into windows of 300 (standardized length).
-    3. Extract 17 features from each window.
-    4. Train a LightGBM classifier.
-    5. Save the model and its metadata back to the MLModel table.
+    Each ``SensorTrainingData`` row already contains the 39 pre-extracted
+    statistical features (matching ``labeled_windows.csv``), so no windowing
+    or feature extraction is needed here — just load, filter, and train.
+
+    Steps:
+      1. Fetch all is_verified=True rows from sensor_training_data.
+      2. Build X (feature matrix) and y (labels) directly from the rows.
+      3. Train a LightGBM classifier.
+      4. Persist the trained model to the MLModel table.
     """
     if lgb is None:
-        return False, "LightGBM not installed - cannot retrain model."
+        return False, "LightGBM not installed — cannot retrain model."
 
     try:
-        # 1. Fetch all verified training data
         records = SensorTrainingData.query.filter_by(is_verified=True).all()
         if not records:
-            return False, "No verified training data found to train on."
+            return False, "No verified training data found. Collect labelled windows first."
 
-        # Convert to DataFrame for easier grouping
-        df = pd.DataFrame([{
-            'user_id': r.user_id,
-            'sensor_type': r.sensor_type,
-            'label': r.label,
-            'created_at': r.created_at,
-            'x': r.x, 'y': r.y, 'z': r.z
-        } for r in records])
+        # Each record exposes its 39 features as a flat list via to_feature_vector()
+        windows_features = [r.to_feature_vector() for r in records]
+        labels           = [r.danger_label for r in records]
 
-        # 2. Group into windows
-        # Goal: group by the exact batch (created_at) it was uploaded in
-        windows_features = []
-        labels = []
-
-        # We group by (user_id, sensor_type, label, created_at)
-        # Each entry in save_training_data shares these for the whole window
-        for _, group in df.groupby(['user_id', 'sensor_type', 'label', 'created_at']):
-            # We need windows of 300 readings as per step3_advanced_model_training.py
-            # If a group is smaller, we skip it (not enough signal).
-            # If larger, we only take the first 300 or chunk it.
-            readings_list = group[['x', 'y', 'z']].values.tolist()
-            
-            # Chunking logic (if user uploaded 900 points, we get 3 windows)
-            WINDOW_SIZE = 300
-            for i in range(0, len(readings_list) - WINDOW_SIZE + 1, WINDOW_SIZE):
-                window = readings_list[i : i + WINDOW_SIZE]
-                sensor_type = group['sensor_type'].iloc[0]
-                label = group['label'].iloc[0]
-                
-                # 3. Extract features
-                # Extract features expects [[x,y,z], ...] shape and sensor_type string
-                feats = extract_features(window, sensor_type)  # returns (1, 17)
-                windows_features.append(feats.flatten())
-                labels.append(label)
-
-        if not windows_features:
-            return False, "Not enough data to form complete windows (need 300 readings per event)."
-
-        X = np.array(windows_features)
+        X = np.array(windows_features)  # shape (n_windows, 39)
         y = np.array(labels)
 
-        # Check for class balance
         if len(np.unique(y)) < 2:
-            return False, "Not enough variety in data (need both 'safe' and 'danger' samples to train)."
+            return False, "Not enough variety in data (need both SAFE and DANGER samples to train)."
 
-        # 4. Train LightGBM
-        # We use a simple but robust config mirroring the script
         model = lgb.LGBMClassifier(
             n_estimators=100,
             max_depth=5,
             learning_rate=0.1,
             random_state=42,
-            verbosity=-1
+            verbosity=-1,
         )
         model.fit(X, y)
 
-        # 5. Calculate Accuracy (Internal set)
         accuracy = float(model.score(X, y))
 
-        # 6. Save to DB
-        # We pickle the model object
         with io.BytesIO() as f:
             joblib.dump(model, f)
             model_bytes = f.getvalue()
 
-        # Generate a new version tag (e.g. v2.0.1_20260405)
         import time
-        version = f"v2.{int(time.time())}"
-        
-        # Deactivate old models
+        version = f"v3.{int(time.time())}"  # v3.x signals 39-feature model
+
         MLModel.query.filter_by(is_active=True).update({'is_active': False})
-        
         new_model = MLModel(
             version=version,
             is_active=True,
             data=model_bytes,
-            accuracy=accuracy
+            accuracy=accuracy,
         )
         db.session.add(new_model)
         db.session.commit()
 
-        logging.info(f"Retraining successful: {version}, accuracy={accuracy:.4f}")
+        logging.info(f"Retraining successful: {version}, windows={len(X)}, accuracy={accuracy:.4f}")
         return True, f"Model {version} trained on {len(X)} windows. Accuracy: {accuracy:.4%}"
 
     except Exception as e:

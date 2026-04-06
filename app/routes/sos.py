@@ -22,6 +22,9 @@ router = APIRouter()
 class TriggerSOSRequest(BaseModel):
     latitude: float = 0.0
     longitude: float = 0.0
+    # Flow 1: 'manual' | 'iot_button'
+    # Flow 2: 'auto_fall' | 'auto_shake'
+    # Flow 3: 'hardware_distress'  (app sends this after BT disconnect/out-of-radius + 10s reconnect window)
     trigger_type: str = 'manual'
     message: Optional[str] = None
 
@@ -43,7 +46,25 @@ def _expire_stale_countdowns(user_id: str):
     db.session.commit()
 
 
-@router.post("/trigger", status_code=201)
+@router.post(
+    "/trigger",
+    status_code=201,
+    summary="Trigger SOS Alert (Start Countdown)",
+    description=(
+        "Start an SOS alert for the authenticated user. Creates an alert with status `countdown` "
+        "and returns `alert_id` + `countdown_seconds`. The app must show a cancellation UI "
+        "for the duration of the countdown.\n\n"
+        "**`trigger_type` values:**\n"
+        "- `'manual'` — user pressed the in-app SOS button (Flow 1)\n"
+        "- `'iot_button'` — hardware button press relayed by the app (Flow 1)\n"
+        "- `'auto_fall'` — accelerometer fall detected by ML (Flow 2, usually via /protection/predict)\n"
+        "- `'auto_shake'` — gyroscope shake detected by ML (Flow 2)\n"
+        "- `'hardware_distress'` — app detected bracelet disconnect/out-of-radius after 10s reconnect window (Flow 3)\n\n"
+        "After the countdown elapses without a cancel, the app calls `POST /sos/send-now` to dispatch. "
+        "For `manual` and `iot_button` cancels, an 'I am Safe' WhatsApp message is sent. "
+        "For auto/hardware_distress cancels, the window is labelled SAFE for ML retraining — no WhatsApp message."
+    ),
+)
 def trigger_sos_route(data: TriggerSOSRequest, user_id: str = Depends(get_current_user)):
     from app.models.trusted_contact import TrustedContact
     if TrustedContact.query.filter_by(user_id=user_id).count() == 0:
@@ -69,13 +90,22 @@ def trigger_sos_route(data: TriggerSOSRequest, user_id: str = Depends(get_curren
         "status": alert.status,
         "triggered_at": format_datetime_for_response(alert.triggered_at, user.country if user else None),
         "timezone": tz,
-        # Countdown metadata — app MUST use these instead of hardcoding values
         "countdown_seconds": countdown_seconds,
         "countdown_expires_at": countdown_expires_at,
     }}
 
 
-@router.post("/send-now")
+@router.post(
+    "/send-now",
+    summary="Dispatch SOS Now (After Countdown)",
+    description=(
+        "Dispatch a previously triggered SOS alert immediately. "
+        "Transitions the alert from `countdown` → `sent` and sends WhatsApp messages to all trusted contacts. "
+        "Returns a `delivery_report` array showing success/failure per contact.\n\n"
+        "Call this when the countdown elapses without a cancel. "
+        "Calling it on an already-sent or cancelled alert returns a 400 error."
+    ),
+)
 def send_sos_now(body: dict, user_id: str = Depends(get_current_user)):
     alert_id = body.get('alert_id')
     success, msg, delivery_report = dispatch_sos(alert_id, user_id)
@@ -84,11 +114,20 @@ def send_sos_now(body: dict, user_id: str = Depends(get_current_user)):
     return {"success": True, "message": msg, "data": {"delivery_report": delivery_report}}
 
 
-@router.post("/cancel")
+@router.post(
+    "/cancel",
+    summary="Cancel SOS (During Countdown)",
+    description=(
+        "Cancel an active SOS countdown. Behaviour differs by `trigger_type` of the alert:\n\n"
+        "- **`manual` / `iot_button`**: Sends 'I am Safe' WhatsApp to all trusted contacts.\n"
+        "- **`auto_fall` / `auto_shake`**: Marks the ML training window as SAFE (label=0) for retraining. No WhatsApp message.\n"
+        "- **`hardware_distress`**: Same as auto — marks window SAFE, no WhatsApp message (app handles reconnect).\n\n"
+        "If `alert_id` is omitted, the latest active countdown for the user is cancelled (IoT fallback)."
+    ),
+)
 def cancel_sos_route(body: dict, user_id: str = Depends(get_current_user)):
     alert_id = body.get('alert_id')
     if not alert_id:
-        # IoT fallback: find the latest countdown
         latest = SOSAlert.query.filter(
             SOSAlert.user_id == user_id,
             SOSAlert.status == 'countdown'
@@ -102,7 +141,16 @@ def cancel_sos_route(body: dict, user_id: str = Depends(get_current_user)):
     return {"success": True, "message": msg}
 
 
-@router.post("/safe")
+@router.post(
+    "/safe",
+    summary="Mark User as Safe (Post-Dispatch)",
+    description=(
+        "Mark a dispatched SOS alert as resolved-safe after the emergency has passed. "
+        "Transitions the alert status to `resolved` and sends a follow-up 'I am Safe' "
+        "WhatsApp message to all trusted contacts. "
+        "Returns `contacts_notified` count."
+    ),
+)
 def mark_safe_route(body: dict, user_id: str = Depends(get_current_user)):
     alert_id = body.get('alert_id')
     success, msg, contacts_notified = mark_user_safe(alert_id, user_id)
@@ -111,7 +159,15 @@ def mark_safe_route(body: dict, user_id: str = Depends(get_current_user)):
     return {"success": True, "message": msg, "data": {"contacts_notified": contacts_notified}}
 
 
-@router.get("/history")
+@router.get(
+    "/history",
+    summary="Get SOS Alert History",
+    description=(
+        "Returns all SOS alerts for the user in reverse chronological order. "
+        "Stale `countdown` alerts older than the expiry window are auto-cancelled before returning. "
+        "Each alert includes `status`, `trigger_type`, `triggered_at` (localized), and `resolution_type`."
+    ),
+)
 def get_sos_history(user_id: str = Depends(get_current_user)):
     _expire_stale_countdowns(user_id)
     alerts = SOSAlert.query.filter_by(user_id=user_id)\
@@ -180,7 +236,11 @@ def get_countdown_status(alert_id: str, user_id: str = Depends(get_current_user)
     return {"success": True, "data": response}
 
 
-@router.post("/test-whatsapp")
+@router.post(
+    "/test-whatsapp",
+    summary="Test WhatsApp Delivery",
+    description="Send a test WhatsApp message to a given number to verify Twilio/WhatsApp configuration.",
+)
 def test_whatsapp(data: WhatsAppTestRequest, user_id: str = Depends(get_current_user)):
     from app.services.whatsapp_service import send_whatsapp_sync
     result = send_whatsapp_sync(data.to_number, data.message)

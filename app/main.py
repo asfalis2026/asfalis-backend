@@ -53,8 +53,37 @@ async def lifespan(application: FastAPI):
 # ── FastAPI app ───────────────────────────────────────────────────────────────
 app = FastAPI(
     title="Asfalis Women Safety API",
-    description="Backend API for the Asfalis personal safety Android application.",
-    version="2.0.0",
+    description=(
+        "## Asfalis Personal Safety Backend\n\n"
+        "Backend API for the Asfalis Android safety application. "
+        "All endpoints are prefixed with `/api/`.\n\n"
+        "---\n\n"
+        "### 🔐 Authentication\n"
+        "Most endpoints require a **Bearer Token** in the `Authorization` header. "
+        "Obtain tokens via `POST /api/auth/login/phone` or `POST /api/auth/verify-phone-otp`.\n\n"
+        "---\n\n"
+        "### 🚨 SOS Flows\n\n"
+        "**Flow 1 — Manual SOS** (`trigger_type: 'manual' | 'iot_button'`)\n"
+        "1. App calls `POST /sos/trigger` → countdown starts\n"
+        "2. If not cancelled → app calls `POST /sos/send-now` → WhatsApp sent\n"
+        "3. Cancel during countdown → 'I am Safe' WhatsApp sent to contacts\n\n"
+        "**Flow 2 — Auto ML SOS** (`trigger_type: 'auto_fall' | 'auto_shake'`)\n"
+        "1. App detects magnitude spike → calls `POST /protection/predict` (or `/sensor-data`)\n"
+        "2. Backend ML model predicts DANGER → starts countdown + sends FCM push\n"
+        "3. If not cancelled → app calls `POST /sos/send-now`\n"
+        "4. Cancel → window labelled SAFE in `sensor_training_data` for ML retraining\n\n"
+        "**Flow 3 — Hardware Auto Distress** (`trigger_type: 'hardware_distress'`)\n"
+        "1. App detects bracelet disconnect / out-of-radius → waits 10s for reconnect\n"
+        "2. No reconnect → app calls `POST /sos/trigger` with `hardware_distress`\n"
+        "3. Backend starts 10s countdown → app calls `POST /sos/send-now` if not cancelled\n"
+        "4. Cancel → window labelled SAFE, no 'I am Safe' WhatsApp (app handles reconnect)\n\n"
+        "---\n\n"
+        "### 🤖 ML Pipeline\n"
+        "The Auto SOS model uses **39 statistical features** per 300-reading window "
+        "(mean, std, min, max, range, median, IQR, RMS for X/Y/Z/Magnitude axes + 3 cross-correlations). "
+        "Collect calibration data via `POST /protection/collect`, then retrain via `POST /protection/train-model`."
+    ),
+    version="2.1.0",
     lifespan=lifespan,
     docs_url="/docs",
     redoc_url="/redoc",

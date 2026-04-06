@@ -7,7 +7,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 logging.basicConfig(
-    level=os.environ.get('LOG_LEVEL', 'INFO').upper(),
+    level=os.environ.get('LOG_LEVEL', 'INFO').strip().upper() or 'INFO',
     format='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
 )
 

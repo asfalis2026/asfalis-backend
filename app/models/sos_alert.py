@@ -10,7 +10,7 @@ class SOSAlert(Base):
 
     id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     user_id = Column(String(36), ForeignKey('users.id'), nullable=False)
-    trigger_type = Column(Enum('manual', 'auto_fall', 'auto_shake', 'bracelet', 'iot_button', name='trigger_type_enum'), nullable=False)
+    trigger_type = Column(Enum('manual', 'auto_fall', 'auto_shake', 'bracelet', 'iot_button', 'hardware_distress', name='trigger_type_enum'), nullable=False)
     latitude = Column(Float, nullable=False)
     longitude = Column(Float, nullable=False)
     address = Column(String(500), nullable=True)

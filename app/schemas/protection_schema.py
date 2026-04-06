@@ -46,10 +46,18 @@ class SensorWindowRequest(BaseModel):
 
 
 class SensorTrainingRequest(BaseModel):
-    """Request body for the /collect endpoint."""
-    sensor_type: Literal['accelerometer', 'gyroscope']
-    data: List[SensorReading]
+    """Request body for the /collect endpoint.
+
+    ``window`` is a list of 300 raw sensor readings.  The backend extracts
+    the 39 statistical features and stores one ``SensorTrainingData`` row.
+
+    Optional metadata fields mirror ``labeled_windows.csv`` columns so
+    manually labelled calibration data can be richly annotated.
+    """
+    window: List[SensorReading] = Field(..., min_length=10)
     label: Union[int, str]
+    dataset_name: Optional[str] = None
+    motion_description: Optional[str] = None
 
     @field_validator('label')
     @classmethod

@@ -91,6 +91,7 @@ celerybeat.pid
 
 # Environments
 .env
+.env*
 .env.*
 !.env.example
 .venv
@@ -157,5 +158,5 @@ BACKEND_SESSION_REQUIREMENTS.md
 FRONTEND_INTEGRATION_GUIDE.md
 test_email_local.py
 
-/documentations
-/data_visualisation
+/documentations_
+/.data_visualisation

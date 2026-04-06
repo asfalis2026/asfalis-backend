@@ -206,14 +206,54 @@ def cancel_sos(alert_id, user_id=None):
     if alert.status in ('cancelled', 'resolved'):
         return False, f"This alert has already been resolved (status: {alert.status})"
 
+    trigger_type = alert.trigger_type or ''
+
     alert.status = 'cancelled'
     alert.resolved_at = datetime.utcnow()
     alert.resolution_type = 'cancelled'
     db.session.commit()
 
-    # Clear the in-process manual cooldown so the user (or IoT device) can
-    # re-trigger immediately after a cancel without hitting the 20-second
-    # double-tap guard.  This is a no-op when user_id is None.
+    # ── Flow 2: Auto ML Trigger ──────────────────────────────────────────────
+    # Cancel Received → Mark window as SAFE → Store in DB → Improve ML dataset
+    if trigger_type.startswith('auto') and user_id:
+        try:
+            from app.services.protection_service import submit_sos_feedback
+            submit_sos_feedback(user_id, alert.id, is_false_alarm=True)
+        except Exception as e:
+            logger = logging.getLogger(__name__)
+            logger.error(f"Failed to auto-submit feedback for cancelled auto-sos: {e}")
+
+    # ── Flow 3: Hardware Auto Distress ───────────────────────────────────────
+    # Cancel Received → Mark Safe → No escalation (app handles reconnect logic)
+    # We still store an ML safe-window for better future predictions.
+    elif trigger_type == 'hardware_distress' and user_id:
+        try:
+            from app.services.protection_service import submit_sos_feedback
+            submit_sos_feedback(user_id, alert.id, is_false_alarm=True)
+        except Exception as e:
+            logger = logging.getLogger(__name__)
+            logger.error(f"Failed to submit feedback for cancelled hardware_distress: {e}")
+
+    # ── Flow 1: Manual SOS / IoT button ─────────────────────────────────────
+    # Cancel Received → Mark Safe → Send 'I am Safe' via WhatsApp
+    elif trigger_type in ['manual', 'iot_button']:
+        user = db.session.get(User, alert.user_id)
+        if user:
+            contacts = TrustedContact.query.filter_by(user_id=alert.user_id).all()
+            if contacts:
+                from app.services.whatsapp_service import send_safe_notification
+                from app.utils.timezone_utils import format_datetime_for_display
+                display_time, tz_label = format_datetime_for_display(datetime.utcnow(), user.country)
+                user_full_name = user.full_name if user.full_name else "Someone"
+                for contact in contacts:
+                    try:
+                        send_safe_notification(user_full_name, contact.phone, display_time, tz_label)
+                    except Exception as e:
+                        logger = logging.getLogger(__name__)
+                        logger.error(f"Failed to send safe notification to {contact.phone}: {e}")
+
+    # Clear the manual cooldown so the user can re-trigger immediately after cancel.
+    # This is a no-op when user_id is None.
     if user_id:
         try:
             from app.services.protection_service import _clear_manual_cooldown

@@ -2,11 +2,12 @@
 
 import logging
 import threading
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from app.dependencies import get_current_user
 from app.schemas.protection_schema import (
     ToggleProtectionRequest, SensorDataRequest,
     SensorWindowRequest, SensorTrainingRequest,
+    FlatFeatureTrainingRequest,
 )
 
 logger = logging.getLogger(__name__)
@@ -105,30 +106,100 @@ def predict_danger(data: SensorWindowRequest, user_id: str = Depends(get_current
     "/collect",
     summary="Collect Labeled Training Window (Calibration)",
     description=(
-        "Submit a raw labeled sensor window for ML model calibration. "
-        "The backend extracts 39 statistical features and stores **one** `sensor_training_data` row "
-        "(not one per reading). These rows are marked `is_verified=True` immediately.\n\n"
-        "**`label`** accepts: `0` / `'safe'` / `'normal'` / `'no_fall'` → SAFE label; "
-        "`1` / `'fall'` / `'danger'` / `'alert'` → DANGER label.\n\n"
-        "**`dataset_name`** (optional): motion category tag, e.g. `'fast_walking'`, `'free_fall'`.\n\n"
-        "**`motion_description`** (optional): free-text annotation, e.g. `'DANGER — Highheight Free Fall'`.\n\n"
-        "After collecting both SAFE and DANGER windows, trigger retraining via `POST /protection/train-model`."
+        "Submit labeled sensor data for ML model calibration. "
+        "Accepts **two payload formats** — the backend auto-detects which was sent:\n\n"
+        "**Format A — Raw window** (backend extracts features):\n"
+        "```json\n"
+        "{\n"
+        "  \"sensor_type\": \"accelerometer\",\n"
+        "  \"label\": 1,\n"
+        "  \"window\": [{\"x\": 0.1, \"y\": 9.8, \"z\": 0.2, \"timestamp\": 1712312312}, ...]\n"
+        "}\n"
+        "```\n\n"
+        "**Format B — Pre-extracted flat features** (matches `labeled_windows.csv` columns):\n"
+        "```json\n"
+        "{\n"
+        "  \"sensor_type\": \"accelerometer\",\n"
+        "  \"label\": 1,\n"
+        "  \"x_mean\": -0.46, \"x_std\": 0.465, \"x_min\": -1.2, \"x_max\": 0.3,\n"
+        "  \"x_range\": 1.5, \"x_median\": -0.45, \"x_iqr\": 0.6, \"x_rms\": 0.67,\n"
+        "  ... (remaining 31 feature columns)\n"
+        "}\n"
+        "```\n\n"
+        "**`label`** accepts: `0` / `'safe'` / `'normal'` / `'no_fall'` → SAFE; "
+        "`1` / `'fall'` / `'danger'` / `'alert'` → DANGER.\n\n"
+        "After collecting both SAFE and DANGER windows, retrain via `POST /protection/train-model`."
     ),
 )
-def collect_training_data(data: SensorTrainingRequest, user_id: str = Depends(get_current_user)):
+async def collect_training_data(request: Request, user_id: str = Depends(get_current_user)):
+    """
+    Auto-detect payload format:
+    - If body contains 'x_mean' (or any flat feature key) → FlatFeatureTrainingRequest
+    - If body contains 'window' → SensorTrainingRequest (raw readings)
+    """
     from app.services.protection_service import save_training_data
-    window = [[r.x, r.y, r.z] for r in data.window]
-    success, msg = save_training_data(
-        user_id=user_id,
-        window_data=window,
-        label=data.label,
-        is_verified=True,
-        dataset_name=data.dataset_name,
-        motion_description=data.motion_description,
-    )
-    if not success:
-        raise HTTPException(500, detail={"code": "SAVE_ERROR", "message": msg})
-    return {"success": True, "message": msg}
+    from app.models.sensor_data import SensorTrainingData
+    from app.extensions import db
+
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(422, detail={"code": "VALIDATION_ERROR",
+                                         "message": "Request body must be valid JSON."})
+
+    # ── Discriminate by payload shape ──────────────────────────────────────────
+    _FLAT_SENTINEL_KEYS = {'x_mean', 'x_std', 'x_min', 'x_max'}
+    is_flat = bool(_FLAT_SENTINEL_KEYS & set(body.keys()))
+
+    if is_flat:
+        # ── Format B: pre-extracted 39 features ────────────────────────────────
+        try:
+            data = FlatFeatureTrainingRequest(**body)
+        except Exception as e:
+            raise HTTPException(422, detail={"code": "VALIDATION_ERROR",
+                                             "message": f"Invalid flat-feature payload: {e}"})
+
+        named = data.to_named_features()
+        try:
+            record = SensorTrainingData(
+                user_id=user_id,
+                danger_label=int(data.label),
+                is_verified=True,
+                dataset_name=data.dataset_name,
+                motion_description=data.motion_description,
+                **named,
+            )
+            db.session.add(record)
+            db.session.commit()
+            return {"success": True, "message": "Saved 1 pre-extracted feature record.",
+                    "data": {"format": "flat_features", "label": int(data.label)}}
+        except Exception as e:
+            db.session.rollback()
+            logger.error(f"Failed to save flat-feature training record: {e}")
+            raise HTTPException(500, detail={"code": "SAVE_ERROR", "message": str(e)})
+
+    else:
+        # ── Format A: raw window → extract features on server ──────────────────
+        try:
+            data = SensorTrainingRequest(**body)
+        except Exception as e:
+            raise HTTPException(422, detail={"code": "VALIDATION_ERROR",
+                                             "message": f"Invalid window payload: {e}"})
+
+        window = [[r.x, r.y, r.z] for r in data.window]
+        success, msg = save_training_data(
+            user_id=user_id,
+            window_data=window,
+            label=data.label,
+            is_verified=True,
+            dataset_name=data.dataset_name,
+            motion_description=data.motion_description,
+        )
+        if not success:
+            raise HTTPException(500, detail={"code": "SAVE_ERROR", "message": msg})
+        return {"success": True, "message": msg,
+                "data": {"format": "raw_window", "label": int(data.label)}}
+
 
 
 @router.post(

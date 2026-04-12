@@ -148,6 +148,55 @@ def device_alert(body: dict):
     return {"success": True, "message": msg}
 
 
+@router.post(
+    "/cancel-sos",
+    summary="Hardware Cancel SOS (Two-Click Bridge)",
+    description=(
+        "**Hardware-only bridge endpoint** — No auth token required.\n\n"
+        "Called by the mobile app on behalf of the bracelet after a two-click hardware "
+        "cancel signal. Identifies the user via `device_mac` and cancels the latest active "
+        "`countdown` or `sent` SOS alert.\n\n"
+        "**Flow 1 & 3 (h/w cancel path)**:\n"
+        "- Bracelet sends two clicks → App receives BLE event → App calls this endpoint\n"
+        "- For `manual`/`iot_button` alerts: sends 'I am Safe' WhatsApp to contacts\n"
+        "- For `auto_*`/`hardware_distress` alerts: labels the window as SAFE for ML retraining\n\n"
+        "**Body**: `{ \"device_mac\": \"AA:BB:CC:DD:EE:FF\" }`"
+    ),
+)
+def hardware_cancel_sos(body: dict):
+    mac = body.get('device_mac')
+    if not mac:
+        raise HTTPException(400, detail={"code": "VALIDATION_ERROR", "message": "Missing device_mac."})
+
+    device = ConnectedDevice.query.filter_by(device_mac=mac).first()
+    if not device:
+        raise HTTPException(404, detail={"code": "NOT_FOUND", "message": "Device not found or not paired."})
+
+    # Find the latest active (countdown or sent) alert for this device's user
+    active_alert = (
+        SOSAlert.query.filter(
+            SOSAlert.user_id == device.user_id,
+            SOSAlert.status.in_(['countdown', 'sent'])
+        ).order_by(SOSAlert.triggered_at.desc()).first()
+    )
+
+    if not active_alert:
+        return {"success": True, "action": "no_op",
+                "message": "No active SOS found for this device."}
+
+    from app.services.sos_service import cancel_sos
+    success, msg = cancel_sos(active_alert.id, device.user_id)
+    if not success:
+        raise HTTPException(400, detail={"code": "CANCEL_ERROR", "message": msg})
+
+    # Update device last-seen
+    device.last_seen = datetime.utcnow()
+    db.session.commit()
+
+    return {"success": True, "action": "cancelled", "message": msg,
+            "data": {"alert_id": active_alert.id}}
+
+
 @router.delete("/{device_id}")
 def delete_device(device_id: str, user_id: str = Depends(get_current_user)):
     device = ConnectedDevice.query.filter_by(id=device_id, user_id=user_id).first()

@@ -38,12 +38,16 @@ def _expire_stale_countdowns(user_id: str):
     """Auto-expire countdown alerts older than COUNTDOWN_EXPIRY_SECONDS."""
     from datetime import datetime, timedelta
     cutoff = datetime.utcnow() - timedelta(seconds=COUNTDOWN_EXPIRY_SECONDS)
-    SOSAlert.query.filter(
-        SOSAlert.user_id == user_id,
-        SOSAlert.status == 'countdown',
-        SOSAlert.triggered_at < cutoff
-    ).update({'status': 'cancelled', 'resolution_type': 'expired'}, synchronize_session=False)
-    db.session.commit()
+    try:
+        SOSAlert.query.filter(
+            SOSAlert.user_id == user_id,
+            SOSAlert.status == 'countdown',
+            SOSAlert.triggered_at < cutoff
+        ).update({'status': 'cancelled', 'resolution_type': 'expired'}, synchronize_session=False)
+        db.session.commit()
+    except Exception as e:
+        db.session.rollback()
+        logger.warning(f"Failed to expire stale countdowns for user {user_id}: {e}")
 
 
 @router.post(
@@ -232,6 +236,63 @@ def get_countdown_status(alert_id: str, user_id: str = Depends(get_current_user)
             response["seconds_remaining"] = 0
             response["countdown_expires_at"] = expires_at.isoformat() + 'Z'
             response["message"] = "Countdown window elapsed. Call POST /sos/send-now to dispatch."
+
+    return {"success": True, "data": response}
+
+
+@router.get(
+    "/active",
+    summary="Get Active SOS Alert (App Resume Recovery)",
+    description=(
+        "Returns the currently active SOS alert for the user, if one exists. "
+        "An alert is 'active' if its status is `countdown` or `sent`.\n\n"
+        "**Use case**: The app calls this on startup or foreground-resume to recover state "
+        "if it was force-killed or backgrounded during an active countdown. "
+        "If a `countdown` alert is found, the app should re-display the cancellation UI "
+        "using the returned `seconds_remaining`. If the countdown has already elapsed, "
+        "the app should call `POST /sos/send-now` immediately.\n\n"
+        "Returns **404** if no active alert exists (user is in a safe state)."
+    ),
+)
+def get_active_sos(user_id: str = Depends(get_current_user)):
+    from datetime import datetime, timedelta
+
+    _expire_stale_countdowns(user_id)
+
+    alert = SOSAlert.query.filter(
+        SOSAlert.user_id == user_id,
+        SOSAlert.status.in_(['countdown', 'sent'])
+    ).order_by(SOSAlert.triggered_at.desc()).first()
+
+    if not alert:
+        raise HTTPException(404, detail={"code": "NO_ACTIVE_SOS",
+                                         "message": "No active SOS alert found."})
+
+    user = db.session.get(User, user_id)
+    tz = get_timezone_for_country(user.country).zone if user and user.country else 'UTC'
+
+    response = {
+        "alert_id": alert.id,
+        "status": alert.status,
+        "trigger_type": alert.trigger_type,
+        "triggered_at": format_datetime_for_response(alert.triggered_at, user.country if user else None),
+        "timezone": tz,
+        "countdown_seconds": COUNTDOWN_SECONDS,
+        "seconds_remaining": 0,
+        "countdown_expires_at": None,
+        "is_countdown_live": False,
+    }
+
+    if alert.status == 'countdown' and alert.triggered_at:
+        expires_at = alert.triggered_at + timedelta(seconds=COUNTDOWN_SECONDS)
+        now = datetime.utcnow()
+        secs_left = (expires_at - now).total_seconds()
+        response["countdown_expires_at"] = expires_at.isoformat() + 'Z'
+        if secs_left > 0:
+            response["is_countdown_live"] = True
+            response["seconds_remaining"] = round(secs_left, 2)
+        else:
+            response["message"] = "Countdown elapsed. Call POST /sos/send-now to dispatch."
 
     return {"success": True, "data": response}
 

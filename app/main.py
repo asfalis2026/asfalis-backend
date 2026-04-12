@@ -106,9 +106,14 @@ app.add_middleware(
 # ── DB session cleanup middleware ─────────────────────────────────────────────
 @app.middleware("http")
 async def db_session_middleware(request: Request, call_next):
-    response = await call_next(request)
-    ScopedSession.remove()
-    return response
+    try:
+        response = await call_next(request)
+        return response
+    finally:
+        # ALWAYS return the connection to the pool — even on 500 crashes.
+        # Without this guard, an exception in call_next skips remove() and
+        # permanently leaks the connection (contributes to QueuePool exhaustion).
+        ScopedSession.remove()
 
 
 # ── Global exception handler ──────────────────────────────────────────────────

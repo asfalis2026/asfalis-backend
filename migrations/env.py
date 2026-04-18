@@ -42,8 +42,7 @@ import app.models.device        # noqa: F401
 import app.models.settings      # noqa: F401
 import app.models.otp           # noqa: F401
 import app.models.support       # noqa: F401
-import app.models.sensor_data   # noqa: F401
-import app.models.ml_model      # noqa: F401
+
 import app.models.revoked_token # noqa: F401
 import app.models.device_security  # noqa: F401
 

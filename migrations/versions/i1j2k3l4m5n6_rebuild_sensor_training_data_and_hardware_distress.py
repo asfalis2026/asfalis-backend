@@ -99,30 +99,10 @@ def upgrade():
     )
 
     # ── 2. Add hardware_distress to trigger_type_enum ────────────────────────
-    if dialect != 'postgresql':
-        # SQLite stores enums as VARCHAR — nothing to do.
-        return
-
-    result = connection.execute(
-        sa.text(
-            "SELECT 1 FROM pg_enum "
-            "WHERE enumtypid = 'trigger_type_enum'::regtype "
-            "AND enumlabel = 'hardware_distress'"
-        )
-    ).fetchone()
-
-    if result is not None:
-        return  # Already present
-
-    # ALTER TYPE ADD VALUE cannot run inside a transaction on PostgreSQL < 12.
-    raw_conn = connection.connection.dbapi_connection
-    original_autocommit = raw_conn.autocommit
-    try:
-        raw_conn.autocommit = True
-        with raw_conn.cursor() as cur:
-            cur.execute("ALTER TYPE trigger_type_enum ADD VALUE 'hardware_distress'")
-    finally:
-        raw_conn.autocommit = original_autocommit
+    if dialect == 'postgresql':
+        op.execute("COMMIT")
+        op.execute("ALTER TYPE trigger_type_enum ADD VALUE IF NOT EXISTS 'hardware_distress'")
+        op.execute("BEGIN")
 
 
 def downgrade():

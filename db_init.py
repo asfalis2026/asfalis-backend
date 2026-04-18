@@ -47,8 +47,6 @@ with engine.connect() as conn:
         import app.models.settings        # noqa
         import app.models.otp             # noqa
         import app.models.support         # noqa
-        import app.models.sensor_data     # noqa
-        import app.models.ml_model        # noqa
         import app.models.revoked_token   # noqa
         import app.models.device_security # noqa
 

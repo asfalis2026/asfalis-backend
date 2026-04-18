@@ -61,12 +61,12 @@ def _expire_stale_countdowns(user_id: str):
         "**`trigger_type` values:**\n"
         "- `'manual'` — user pressed the in-app SOS button (Flow 1)\n"
         "- `'iot_button'` — hardware button press relayed by the app (Flow 1)\n"
-        "- `'auto_fall'` — accelerometer fall detected by ML (Flow 2, usually via /protection/predict)\n"
-        "- `'auto_shake'` — gyroscope shake detected by ML (Flow 2)\n"
+        "- `'auto_fall'` — accelerometer fall detected (Flow 2, usually via /protection/predict)\n"
+        "- `'auto_shake'` — gyroscope shake detected (Flow 2)\n"
         "- `'hardware_distress'` — app detected bracelet disconnect/out-of-radius after 10s reconnect window (Flow 3)\n\n"
         "After the countdown elapses without a cancel, the app calls `POST /sos/send-now` to dispatch. "
         "For `manual` and `iot_button` cancels, an 'I am Safe' WhatsApp message is sent. "
-        "For auto/hardware_distress cancels, the window is labelled SAFE for ML retraining — no WhatsApp message."
+        "For auto/hardware_distress cancels, no WhatsApp message is sent."
     ),
 )
 def trigger_sos_route(data: TriggerSOSRequest, user_id: str = Depends(get_current_user)):
@@ -124,8 +124,8 @@ def send_sos_now(body: dict, user_id: str = Depends(get_current_user)):
     description=(
         "Cancel an active SOS countdown. Behaviour differs by `trigger_type` of the alert:\n\n"
         "- **`manual` / `iot_button`**: Sends 'I am Safe' WhatsApp to all trusted contacts.\n"
-        "- **`auto_fall` / `auto_shake`**: Marks the ML training window as SAFE (label=0) for retraining. No WhatsApp message.\n"
-        "- **`hardware_distress`**: Same as auto — marks window SAFE, no WhatsApp message (app handles reconnect).\n\n"
+        "- **`auto_fall` / `auto_shake`**: No WhatsApp message.\n"
+        "- **`hardware_distress`**: No WhatsApp message (app handles reconnect).\n\n"
         "If `alert_id` is omitted, the latest active countdown for the user is cancelled (IoT fallback)."
     ),
 )

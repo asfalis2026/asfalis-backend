@@ -3,7 +3,10 @@ services:
     name: Asfalis-backend
     runtime: python
     buildCommand: pip install -r requirements.txt
-    startCommand: alembic upgrade head && uvicorn wsgi:app --host 0.0.0.0 --port $PORT --workers 1
+    startCommand: >-
+      PYTHONPATH=/opt/render/project/src python db_init.py &&
+      PYTHONPATH=/opt/render/project/src alembic -c migrations/alembic.ini upgrade head &&
+      uvicorn wsgi:app --host 0.0.0.0 --port $PORT --workers 1
     envVars:
       - key: DATABASE_URL
         fromDatabase:
@@ -22,6 +25,12 @@ services:
       - key: TWILIO_PHONE_NUMBER
         sync: false
       - key: TWILIO_VERIFY_SERVICE_SID
+        sync: false
+      - key: TWILIO_WA_ACCOUNT_SID
+        sync: false
+      - key: TWILIO_WA_AUTH_TOKEN
+        sync: false
+      - key: TWILIO_WHATSAPP_FROM
         sync: false
 
 databases:

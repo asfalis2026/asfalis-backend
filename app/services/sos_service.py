@@ -55,12 +55,12 @@ def trigger_sos(user_id, lat, lng, trigger_type='manual', trigger_prefix=None, t
     if on_cooldown:
         existing = SOSAlert.query.filter_by(user_id=user_id, status='countdown').first()
         if existing:
-            return existing, f"SOS on cooldown — please wait {secs_left}s before triggering again."
-        return None, f"SOS on cooldown — please wait {secs_left}s before triggering again."
+            return existing, f"SOS on cooldown — please wait {secs_left}s before triggering again.", COUNTDOWN_SECONDS
+        return None, f"SOS on cooldown — please wait {secs_left}s before triggering again.", COUNTDOWN_SECONDS
 
     user = db.session.get(User, user_id)
     if not user:
-        return None, "User not found"
+        return None, "User not found", COUNTDOWN_SECONDS
 
     # Check for existing countdown alert
     existing_alert = SOSAlert.query.filter_by(
@@ -75,7 +75,7 @@ def trigger_sos(user_id, lat, lng, trigger_type='manual', trigger_prefix=None, t
             existing_alert.resolved_at = datetime.utcnow()
             db.session.commit()
         else:
-            return existing_alert, "Alert already in countdown"
+            return existing_alert, "Alert already in countdown", COUNTDOWN_SECONDS
 
     # Prioritize the new sos_message on User model, fallback to Settings or Default
     start_message = "Emergency!"
@@ -106,11 +106,49 @@ def trigger_sos(user_id, lat, lng, trigger_type='manual', trigger_prefix=None, t
     # Mark cooldown for this user (auto or manual store depending on trigger_type)
     mark_triggered()
 
-    # Do NOT auto-dispatch here. Client controls countdown state and decides:
-    # - POST /sos/send-now when countdown expires (no cancel received)
-    # - POST /sos/cancel during the countdown window
-    # The countdown_seconds value is passed back to the caller so the mobile
-    # app uses the server-defined window instead of a hardcoded constant.
+    # ── Server-side auto-dispatch guard ─────────────────────────────────────
+    # The mobile app should call POST /sos/send-now once the countdown elapses.
+    # This background thread is a safety net: if the app is killed, crashes, or
+    # (during Postman testing) never calls /send-now, the backend will auto-
+    # dispatch after COUNTDOWN_SECONDS + a small grace period.
+    alert_id_snapshot = new_alert.id
+
+    def _auto_dispatch_after_countdown(aid, delay):
+        import time
+        time.sleep(delay)
+        try:
+            from app.database import ScopedSession
+            session = ScopedSession()
+            alert_obj = session.get(SOSAlert, aid)
+            if alert_obj and alert_obj.status == 'countdown':
+                logger = logging.getLogger(__name__)
+                logger.info(f"[auto-dispatch] Alert {aid} still in countdown after {delay}s — dispatching now.")
+                # dispatch_sos operates on ScopedSession internally; remove our
+                # local reference first so it gets a fresh thread-local session.
+                ScopedSession.remove()
+                dispatch_sos(aid)
+            else:
+                ScopedSession.remove()
+        except Exception as exc:
+            logging.getLogger(__name__).error(
+                f"[auto-dispatch] Failed for alert {aid}: {exc}"
+            )
+            try:
+                from app.database import ScopedSession as _S
+                _S.remove()
+            except Exception:
+                pass
+
+    import threading
+    grace = COUNTDOWN_SECONDS + 2   # 2-second grace for network latency
+    t = threading.Thread(
+        target=_auto_dispatch_after_countdown,
+        args=(alert_id_snapshot, grace),
+        daemon=True,
+        name=f"sos-auto-{alert_id_snapshot[:8]}",
+    )
+    t.start()
+
     return new_alert, "SOS countdown started", COUNTDOWN_SECONDS
 
 def dispatch_sos(alert_id, user_id=None):

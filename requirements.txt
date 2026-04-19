@@ -2,6 +2,7 @@ fastapi
 uvicorn[standard]
 python-socketio
 python-jose[cryptography]
+cryptography
 pydantic
 slowapi
 psycopg2-binary

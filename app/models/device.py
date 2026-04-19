@@ -3,6 +3,7 @@ from datetime import datetime
 import uuid
 
 from app.database import Base
+from app.utils.encryption import EncryptedString
 
 
 class ConnectedDevice(Base):
@@ -10,8 +11,12 @@ class ConnectedDevice(Base):
 
     id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     user_id = Column(String(36), ForeignKey('users.id'), nullable=False)
-    device_name = Column(String(100), nullable=False)
-    device_mac = Column(String(17), nullable=False)
+    # ── Encrypted hardware identifiers ─────────────────────────────────────────
+    device_name = Column(EncryptedString(), nullable=False)
+    device_mac = Column(EncryptedString(), nullable=False)
+    # ── HMAC index for MAC equality lookups (pairing, button events) ───────────
+    mac_hmac = Column(String(64), nullable=True, index=True)
+    # ── Non-sensitive operational fields ──────────────────────────────────────
     is_connected = Column(Boolean, default=False)
     firmware_version = Column(String(20), nullable=True)
     battery_level = Column(Integer, nullable=True)
@@ -20,6 +25,7 @@ class ConnectedDevice(Base):
     last_button_press_at = Column(DateTime, nullable=True)
 
     def to_dict(self):
+        # TypeDecorator auto-decrypts on attribute access — returns plaintext
         return {
             'device_id': self.id,
             'device_name': self.device_name,

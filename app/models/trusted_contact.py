@@ -4,6 +4,7 @@ from datetime import datetime
 import uuid
 
 from app.database import Base
+from app.utils.encryption import EncryptedString
 
 
 class TrustedContact(Base):
@@ -11,9 +12,13 @@ class TrustedContact(Base):
 
     id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     user_id = Column(String(36), ForeignKey('users.id'), nullable=False)
-    name = Column(String(100), nullable=False)
-    phone = Column(String(20), nullable=False)
-    email = Column(String(255), nullable=True)
+    # ── Encrypted PII ──────────────────────────────────────────────────────────
+    name = Column(EncryptedString(), nullable=False)
+    phone = Column(EncryptedString(), nullable=False)
+    email = Column(EncryptedString(), nullable=True)
+    # ── HMAC index for phone equality lookups (duplicate-check, OTP lookup) ───
+    phone_hmac = Column(String(64), nullable=True, index=True)
+    # ── Non-sensitive fields ───────────────────────────────────────────────────
     relationship = Column(String(50), nullable=True)
     is_primary = Column(Boolean, default=False)
     is_verified = Column(Boolean, default=False)
@@ -21,6 +26,7 @@ class TrustedContact(Base):
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
 
     def to_dict(self):
+        # TypeDecorator auto-decrypts on attribute access — returns plaintext
         return {
             'id': self.id,
             'name': self.name,

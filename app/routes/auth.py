@@ -5,6 +5,10 @@ Token strategy (unchanged):
   access_token  — 15 min, used on all protected endpoints
   refresh_token — 30 days, rotated on every /refresh; blocklisted on logout
   sos_token     — long-lived access token, stored by app for emergency use
+
+Encryption note:
+  User.phone and User.email are stored encrypted. SQL equality lookups use
+  phone_hmac/email_hmac (deterministic HMAC-SHA256 fingerprints) instead.
 """
 
 import uuid
@@ -29,6 +33,7 @@ from app.schemas.auth_schema import (
 from app.dependencies import get_current_user, decode_token_lenient
 from app.utils.validators import validate_password
 from app.utils.otp import store_otp, verify_otp, generate_otp
+from app.utils.encryption import compute_hmac
 from app.services.sms_service import send_otp_sms
 from slowapi import Limiter
 from slowapi.util import get_remote_address
@@ -87,8 +92,9 @@ def validate_token(user_id: str = Depends(get_current_user)):
 @router.post("/register/phone", status_code=201)
 def register_phone(data: PhoneRegisterRequest):
     phone = data.phone_number
-
-    if User.query.filter_by(phone=phone).first():
+    # Lookup via HMAC index — phone column is encrypted, direct equality won't work
+    p_hmac = compute_hmac(phone)
+    if User.query.filter_by(phone_hmac=p_hmac).first():
         raise HTTPException(400, detail={"code": "PHONE_TAKEN",
                                          "message": "Phone number already registered."})
 
@@ -99,6 +105,7 @@ def register_phone(data: PhoneRegisterRequest):
     new_user = User(
         full_name=data.full_name,
         phone=phone,
+        phone_hmac=p_hmac,
         country=data.country,
         password_hash=_hash_password(data.password),
         auth_provider='phone',
@@ -107,7 +114,11 @@ def register_phone(data: PhoneRegisterRequest):
     db.session.flush()  # get ID before commit
 
     # Default settings row
-    db.session.add(UserSettings(user_id=new_user.id))
+    db.session.add(UserSettings(
+        user_id=new_user.id,
+        emergency_number='911',
+        sos_message="Emergency! I need help. This is an automated SOS alert from Women Safety app. My live location is attached."
+    ))
 
     # Generate and send OTP
     otp_code = generate_otp()
@@ -144,7 +155,8 @@ def verify_phone_otp(data: VerifyPhoneOTPRequest):
     if not ok:
         raise HTTPException(400, detail={"code": "OTP_INVALID", "message": msg})
 
-    user = User.query.filter_by(phone=data.phone_number).first()
+    # Lookup via HMAC index
+    user = User.query.filter_by(phone_hmac=compute_hmac(data.phone_number)).first()
     if not user:
         raise HTTPException(404, detail={"code": "NOT_FOUND", "message": "User not found."})
 
@@ -170,7 +182,8 @@ def verify_phone_otp(data: VerifyPhoneOTPRequest):
 
 @router.post("/resend-otp")
 def resend_otp(request: Request, data: ResendOTPRequest):
-    user = User.query.filter_by(phone=data.phone_number).first()
+    # Lookup via HMAC index
+    user = User.query.filter_by(phone_hmac=compute_hmac(data.phone_number)).first()
     if not user:
         raise HTTPException(404, detail={"code": "NOT_FOUND", "message": "User not found."})
 
@@ -188,7 +201,8 @@ def resend_otp(request: Request, data: ResendOTPRequest):
 
 @router.post("/login/phone")
 def login_phone(request: Request, data: PhoneLoginRequest):
-    user = User.query.filter_by(phone=data.phone_number).first()
+    # Lookup via HMAC index
+    user = User.query.filter_by(phone_hmac=compute_hmac(data.phone_number)).first()
     if not user:
         raise HTTPException(401, detail={"code": "INVALID_CREDENTIALS",
                                          "message": "Invalid phone number or password."})
@@ -205,18 +219,24 @@ def login_phone(request: Request, data: PhoneLoginRequest):
     if settings.IMEI_BINDING_ENABLED and data.device_imei:
         binding = UserDeviceBinding.query.filter_by(user_id=user.id).first()
         if not binding:
-            binding = UserDeviceBinding(user_id=user.id, device_imei=data.device_imei)
+            binding = UserDeviceBinding(
+                user_id=user.id,
+                device_imei=data.device_imei,
+                imei_hmac=compute_hmac(data.device_imei)
+            )
             db.session.add(binding)
         elif binding.device_imei != data.device_imei:
-            # Check for pending approved handset change
+            # Check for pending approved handset change using HMAC index
+            new_imei_hmac = compute_hmac(data.device_imei)
             pending = HandsetChangeRequest.query.filter_by(
-                user_id=user.id, new_device_imei=data.device_imei, status='pending'
+                user_id=user.id, new_imei_hmac=new_imei_hmac, status='pending'
             ).order_by(HandsetChangeRequest.requested_at.desc()).first()
 
             if pending and pending.is_eligible:
                 pending.status = 'completed'
                 pending.completed_at = datetime.utcnow()
                 binding.device_imei = data.device_imei
+                binding.imei_hmac = new_imei_hmac
                 binding.last_login_at = datetime.utcnow()
             elif pending and not pending.is_eligible:
                 hours_left = (pending.eligible_at - datetime.utcnow()).total_seconds() / 3600
@@ -229,7 +249,8 @@ def login_phone(request: Request, data: PhoneLoginRequest):
                 new_req = HandsetChangeRequest(
                     user_id=user.id,
                     old_device_imei=binding.device_imei,
-                    new_device_imei=data.device_imei
+                    new_device_imei=data.device_imei,
+                    new_imei_hmac=compute_hmac(data.device_imei)
                 )
                 db.session.add(new_req)
                 db.session.commit()
@@ -328,7 +349,8 @@ def logout(data: RefreshTokenRequest):
 
 @router.post("/forgot-password")
 def forgot_password(request: Request, data: ForgotPasswordRequest):
-    user = User.query.filter_by(phone=data.phone_number).first()
+    # Lookup via HMAC index
+    user = User.query.filter_by(phone_hmac=compute_hmac(data.phone_number)).first()
     if not user:
         raise HTTPException(404, detail={"code": "NOT_FOUND",
                                          "message": "No account with that phone number."})
@@ -353,7 +375,8 @@ def reset_password(data: ResetPasswordRequest):
         raise HTTPException(400, detail={"code": "WEAK_PASSWORD",
                                          "message": "Password must be at least 6 chars and contain a digit."})
 
-    user = User.query.filter_by(phone=data.phone_number).first()
+    # Lookup via HMAC index
+    user = User.query.filter_by(phone_hmac=compute_hmac(data.phone_number)).first()
     if not user:
         raise HTTPException(404, detail={"code": "NOT_FOUND", "message": "User not found."})
 

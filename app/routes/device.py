@@ -1,4 +1,9 @@
-"""Device routes — converted to FastAPI."""
+"""Device routes — converted to FastAPI.
+
+Encryption note:
+  ConnectedDevice.device_mac is stored encrypted. SQL equality lookups use
+  mac_hmac (deterministic HMAC-SHA256 fingerprint) instead.
+"""
 
 import logging
 from datetime import datetime
@@ -12,6 +17,7 @@ from app.models.device import ConnectedDevice
 from app.models.sos_alert import SOSAlert
 from app.config import settings
 from app.dependencies import get_current_user
+from app.utils.encryption import compute_hmac
 from app.services.sos_service import trigger_sos
 
 logger = logging.getLogger(__name__)
@@ -32,7 +38,9 @@ class ButtonEventRequest(BaseModel):
 
 @router.post("/register", status_code=201)
 def register_device(data: DeviceRegisterRequest, user_id: str = Depends(get_current_user)):
-    device = ConnectedDevice.query.filter_by(device_mac=data.device_mac).first()
+    # Lookup via HMAC index — device_mac column is encrypted
+    mac_hmac = compute_hmac(data.device_mac)
+    device = ConnectedDevice.query.filter_by(mac_hmac=mac_hmac).first()
     if device:
         device.user_id = user_id
         device.is_connected = True
@@ -43,6 +51,7 @@ def register_device(data: DeviceRegisterRequest, user_id: str = Depends(get_curr
             user_id=user_id,
             device_name=data.device_name,
             device_mac=data.device_mac,
+            mac_hmac=mac_hmac,
             firmware_version=data.firmware_version,
             is_connected=True,
             last_seen=datetime.utcnow()
@@ -73,7 +82,9 @@ def update_device_status(device_id: str, body: dict, user_id: str = Depends(get_
 
 @router.post("/button-event")
 def iot_button_event(data: ButtonEventRequest, user_id: str = Depends(get_current_user)):
-    device = ConnectedDevice.query.filter_by(device_mac=data.device_mac, user_id=user_id).first()
+    # Lookup via HMAC index
+    mac_hmac = compute_hmac(data.device_mac)
+    device = ConnectedDevice.query.filter_by(mac_hmac=mac_hmac, user_id=user_id).first()
     if not device:
         raise HTTPException(404, detail={"code": "NOT_FOUND",
                                          "message": "Device not found or not paired."})
@@ -137,7 +148,8 @@ def device_alert(body: dict):
     mac = body.get('device_mac')
     if not mac:
         raise HTTPException(400, detail={"code": "VALIDATION_ERROR", "message": "Missing MAC."})
-    device = ConnectedDevice.query.filter_by(device_mac=mac).first()
+    # Lookup via HMAC index
+    device = ConnectedDevice.query.filter_by(mac_hmac=compute_hmac(mac)).first()
     if not device:
         raise HTTPException(404, detail={"code": "NOT_FOUND", "message": "Device not found."})
     from app.services.location_service import get_last_location
@@ -168,7 +180,8 @@ def hardware_cancel_sos(body: dict):
     if not mac:
         raise HTTPException(400, detail={"code": "VALIDATION_ERROR", "message": "Missing device_mac."})
 
-    device = ConnectedDevice.query.filter_by(device_mac=mac).first()
+    # Lookup via HMAC index
+    device = ConnectedDevice.query.filter_by(mac_hmac=compute_hmac(mac)).first()
     if not device:
         raise HTTPException(404, detail={"code": "NOT_FOUND", "message": "Device not found or not paired."})
 

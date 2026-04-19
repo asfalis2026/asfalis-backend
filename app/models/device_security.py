@@ -3,6 +3,7 @@ from datetime import datetime, timedelta
 import uuid
 
 from app.database import Base
+from app.utils.encryption import EncryptedString
 
 
 class UserDeviceBinding(Base):
@@ -10,7 +11,11 @@ class UserDeviceBinding(Base):
 
     id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     user_id = Column(String(36), ForeignKey('users.id'), nullable=False, unique=True)
-    device_imei = Column(String(64), nullable=False)
+    # ── Encrypted hardware identifier ─────────────────────────────────────────
+    device_imei = Column(EncryptedString(), nullable=False)
+    # ── HMAC index for IMEI equality lookups (login device-mismatch checks) ───
+    imei_hmac = Column(String(64), nullable=True, index=True)
+    # ── Timestamps ────────────────────────────────────────────────────────────
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
     last_login_at = Column(DateTime, nullable=False, default=datetime.utcnow)
@@ -21,8 +26,12 @@ class HandsetChangeRequest(Base):
 
     id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     user_id = Column(String(36), ForeignKey('users.id'), nullable=False)
-    old_device_imei = Column(String(64), nullable=True)
-    new_device_imei = Column(String(64), nullable=False)
+    # ── Encrypted hardware identifiers ────────────────────────────────────────
+    old_device_imei = Column(EncryptedString(), nullable=True)
+    new_device_imei = Column(EncryptedString(), nullable=False)
+    # ── HMAC index for new_device_imei lookup (pending transfer checks) ───────
+    new_imei_hmac = Column(String(64), nullable=True, index=True)
+    # ── Non-sensitive operational fields ──────────────────────────────────────
     status = Column(String(20), nullable=False, default='pending')
     requested_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     eligible_at = Column(DateTime, nullable=False, default=lambda: datetime.utcnow() + timedelta(hours=12))

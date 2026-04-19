@@ -63,6 +63,16 @@ class Config:
     IOT_DOUBLE_TAP_WINDOW_SECONDS = get_env('IOT_DOUBLE_TAP_WINDOW_SECONDS', 1.5, float)
     LOG_LEVEL = os.environ.get('LOG_LEVEL', 'INFO').upper()
 
+    # ── Field-level encryption (at rest) ───────────────────────────────────────
+    # FIELD_ENCRYPTION_KEY: Fernet key for symmetric AES-128-CBC + HMAC-SHA256.
+    # Generate with:
+    #   python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+    # FIELD_HMAC_KEY: Secret used for deterministic HMAC index columns (phone_hmac,
+    #   email_hmac, mac_hmac, imei_hmac) that allow equality lookups without storing plaintext.
+    # Both keys MUST be set in production. Absence will raise at first write.
+    FIELD_ENCRYPTION_KEY = os.environ.get('FIELD_ENCRYPTION_KEY')
+    FIELD_HMAC_KEY = os.environ.get('FIELD_HMAC_KEY')
+
 
 # Module-level singleton so services can do:
 #   from app.config import settings

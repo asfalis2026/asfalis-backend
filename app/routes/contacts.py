@@ -1,4 +1,9 @@
-"""Trusted contacts routes — converted to FastAPI."""
+"""Trusted contacts routes — converted to FastAPI.
+
+Encryption note:
+  TrustedContact.phone is stored encrypted. SQL equality lookups use
+  phone_hmac (deterministic HMAC-SHA256 fingerprint) instead.
+"""
 
 import random
 import logging
@@ -12,6 +17,7 @@ from app.models.user import User
 from app.schemas.contact_schema import ContactRequest
 from app.config import Config, settings
 from app.dependencies import get_current_user
+from app.utils.encryption import compute_hmac
 from app.services.sms_service import send_contact_verification_otp, send_contact_welcome_sms
 
 logger = logging.getLogger(__name__)
@@ -31,12 +37,15 @@ def add_contact(data: ContactRequest, user_id: str = Depends(get_current_user)):
         raise HTTPException(400, detail={"code": "Limit Exceeded", "message": "Max trusted contacts reached."})
 
     phone = data.phone
-    if TrustedContact.query.filter_by(user_id=user_id, phone=phone).first():
+    # Duplicate check via HMAC index — phone column is encrypted, direct equality won't work
+    p_hmac = compute_hmac(phone)
+    if TrustedContact.query.filter_by(user_id=user_id, phone_hmac=p_hmac).first():
         raise HTTPException(400, detail={"code": "DUPLICATE", "message": "This contact already exists."})
 
     otp_code = str(random.randint(100000, 999999))
     expires_at = datetime.utcnow() + timedelta(seconds=Config.OTP_EXPIRY_SECONDS)
 
+    # OTPRecord still stores phone in plaintext (OTP excluded from encryption per requirements)
     OTPRecord.query.filter_by(
         phone=phone, purpose='trusted_contact_verification', is_used=False
     ).update({'is_used': True}, synchronize_session=False)
@@ -47,9 +56,14 @@ def add_contact(data: ContactRequest, user_id: str = Depends(get_current_user)):
     ))
 
     new_contact = TrustedContact(
-        user_id=user_id, name=data.name, phone=phone,
-        email=data.email, relationship=data.relationship,
-        is_primary=False, is_verified=False
+        user_id=user_id,
+        name=data.name,
+        phone=phone,
+        phone_hmac=p_hmac,
+        email=data.email,
+        relationship=data.relationship,
+        is_primary=False,
+        is_verified=False
     )
     db.session.add(new_contact)
 
@@ -96,6 +110,8 @@ def verify_contact_otp(body: dict, user_id: str = Depends(get_current_user)):
     if contact.is_verified:
         return {"success": True, "message": "Already verified.", "data": contact.to_dict(), "already_verified": True}
 
+    # OTPRecord.phone is stored in plaintext (OTP excluded from encryption per requirements)
+    # contact.phone is decrypted transparently by the TypeDecorator
     otp_record = OTPRecord.query.filter_by(
         phone=contact.phone, purpose='trusted_contact_verification', is_used=False
     ).order_by(OTPRecord.created_at.desc()).first()
@@ -149,6 +165,7 @@ def resend_contact_otp(body: dict, user_id: str = Depends(get_current_user)):
         raise HTTPException(404, detail={"code": "NOT_FOUND",
                                          "message": "Pending contact not found or already verified."})
 
+    # OTPRecord.phone is plaintext — contact.phone is decrypted by TypeDecorator
     OTPRecord.query.filter_by(
         phone=contact.phone, purpose='trusted_contact_verification', is_used=False
     ).update({'is_used': True}, synchronize_session=False)
@@ -189,9 +206,15 @@ def update_contact(contact_id: str, data: ContactRequest, user_id: str = Depends
         TrustedContact.query.filter_by(user_id=user_id, is_primary=True).update(
             {'is_primary': False}, synchronize_session=False)
 
-    for f in ('name', 'phone', 'email', 'relationship', 'is_primary'):
+    for f in ('name', 'email', 'relationship', 'is_primary'):
         if f in update:
             setattr(contact, f, update[f])
+
+    # If phone is being updated, refresh the HMAC index too
+    if 'phone' in update:
+        contact.phone = update['phone']
+        contact.phone_hmac = compute_hmac(update['phone'])
+
     db.session.commit()
     return {"success": True, "data": contact.to_dict()}
 

@@ -1,8 +1,9 @@
-from sqlalchemy import Column, String, Float, Boolean, DateTime, ForeignKey
+from sqlalchemy import Column, String, Boolean, DateTime, ForeignKey
 from datetime import datetime
 import uuid
 
 from app.database import Base
+from app.utils.encryption import EncryptedString, EncryptedFloat
 
 
 class LocationHistory(Base):
@@ -10,14 +11,17 @@ class LocationHistory(Base):
 
     id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     user_id = Column(String(36), ForeignKey('users.id'), nullable=False)
-    latitude = Column(Float, nullable=False)
-    longitude = Column(Float, nullable=False)
-    address = Column(String(500), nullable=True)
-    accuracy = Column(Float, nullable=True)
+    # ── Encrypted location data ────────────────────────────────────────────────
+    latitude = Column(EncryptedFloat(), nullable=False)
+    longitude = Column(EncryptedFloat(), nullable=False)
+    address = Column(EncryptedString(), nullable=True)
+    # ── Non-sensitive operational fields ──────────────────────────────────────
+    accuracy = Column(EncryptedFloat(), nullable=True)
     is_sharing = Column(Boolean, default=False)
     recorded_at = Column(DateTime, nullable=False, default=datetime.utcnow)
 
     def to_dict(self):
+        # TypeDecorator auto-decrypts on attribute access — returns plaintext floats/strings
         return {
             'latitude': self.latitude,
             'longitude': self.longitude,

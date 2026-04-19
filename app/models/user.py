@@ -4,23 +4,30 @@ from datetime import datetime
 import uuid
 
 from app.database import Base
+from app.utils.encryption import EncryptedString
 
 
 class User(Base):
     __tablename__ = 'users'
 
     id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
-    full_name = Column(String(100), nullable=False)
+    # ── Encrypted PII ──────────────────────────────────────────────────────────
+    full_name = Column(EncryptedString(), nullable=False)
+    email = Column(EncryptedString(), nullable=True)
+    phone = Column(EncryptedString(), nullable=True)
+    sos_message = Column(EncryptedString(), nullable=True)
+    fcm_token = Column(EncryptedString(), nullable=True)
+    profile_image_url = Column(EncryptedString(), nullable=True)
+    # ── HMAC index columns — enable equality lookups on encrypted fields ────────
+    # Use phone_hmac / email_hmac in filter_by() instead of the plaintext columns.
+    phone_hmac = Column(String(64), unique=True, nullable=True, index=True)
+    email_hmac = Column(String(64), unique=True, nullable=True, index=True)
+    # ── Non-sensitive fields — stored in plaintext ─────────────────────────────
     country = Column(String(100), nullable=True)
-    email = Column(String(255), unique=True, nullable=True)
-    phone = Column(String(20), unique=True, nullable=True)
     password_hash = Column(String(255), nullable=True)
     auth_provider = Column(Enum('phone', 'google', name='auth_provider_enum'), nullable=False)
-    profile_image_url = Column(String(500), nullable=True)
     is_active = Column(Boolean, default=True)
     is_verified = Column(Boolean, default=False)
-    sos_message = Column(String(500), nullable=True)
-    fcm_token = Column(String(500), nullable=True)
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -33,6 +40,7 @@ class User(Base):
     support_tickets = relationship('SupportTicket', backref='user', lazy=True, cascade="all, delete-orphan")
 
     def to_dict(self):
+        # TypeDecorator auto-decrypts on attribute access — returns plaintext
         return {
             'id': self.id,
             'full_name': self.full_name,

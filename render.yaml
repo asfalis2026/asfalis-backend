@@ -4,8 +4,6 @@ services:
     runtime: python
     buildCommand: pip install -r requirements.txt
     startCommand: >-
-      PYTHONPATH=/opt/render/project/src python db_init.py &&
-      PYTHONPATH=/opt/render/project/src alembic -c migrations/alembic.ini upgrade head &&
       uvicorn wsgi:app --host 0.0.0.0 --port $PORT --workers 1
     envVars:
       - key: DATABASE_URL

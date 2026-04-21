@@ -11,8 +11,12 @@ Mounts:
   - Global HTTP exception handler that wraps errors in Asfalis JSON format
 """
 
+import asyncio
 import logging
+import os
 from contextlib import asynccontextmanager
+
+import httpx
 
 from fastapi import FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
@@ -36,6 +40,24 @@ logger = logging.getLogger(__name__)
 limiter = Limiter(key_func=get_remote_address)
 
 
+# ── Keepalive ping (prevents Render free-tier spin-down) ─────────────────────
+async def _keepalive_ping():
+    """Ping own /health every 30 s to prevent Render free-tier idle shutdown."""
+    await asyncio.sleep(15)  # let the server finish starting up first
+    service_url = os.environ.get("RENDER_EXTERNAL_URL")  # injected automatically by Render
+    if not service_url:
+        return  # not running on Render — no-op locally
+    url = f"{service_url}/health"
+    logger.info(f"Keepalive ping active → {url}")
+    async with httpx.AsyncClient() as client:
+        while True:
+            try:
+                await client.get(url, timeout=10)
+            except Exception:
+                pass  # network hiccup — just retry next cycle
+            await asyncio.sleep(30)
+
+
 # ── Lifespan: startup / shutdown ─────────────────────────────────────────────
 @asynccontextmanager
 async def lifespan(application: FastAPI):
@@ -45,6 +67,7 @@ async def lifespan(application: FastAPI):
         logger.info("Database tables verified.")
     except Exception as e:
         logger.warning(f"DB create_all skipped: {e}")
+    asyncio.create_task(_keepalive_ping())  # keeps Render free-tier awake
     yield
     ScopedSession.remove()
     logger.info("Application shutdown.")
@@ -185,3 +208,4 @@ app.include_router(location.router,    prefix="/api/location",   tags=["Location
 app.include_router(settings.router,    prefix="/api/settings",   tags=["Settings"])
 app.include_router(device.router,      prefix="/api/device",     tags=["Device"])
 app.include_router(support.router,     prefix="/api/support",    tags=["Support"])
+

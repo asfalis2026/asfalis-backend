@@ -38,6 +38,8 @@ class User(Base):
     settings = relationship('UserSettings', uselist=False, backref='user', lazy=True, cascade="all, delete-orphan")
     devices = relationship('ConnectedDevice', backref='user', lazy=True, cascade="all, delete-orphan")
     support_tickets = relationship('SupportTicket', backref='user', lazy=True, cascade="all, delete-orphan")
+    device_bindings = relationship('UserDeviceBinding', uselist=False, backref='user', lazy=True, cascade="all, delete-orphan")
+    handset_change_requests = relationship('HandsetChangeRequest', backref='user', lazy=True, cascade="all, delete-orphan")
 
     def to_dict(self):
         # TypeDecorator auto-decrypts on attribute access — returns plaintext

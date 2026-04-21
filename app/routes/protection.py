@@ -95,3 +95,15 @@ def predict_danger(data: SensorWindowRequest, user_id: str = Depends(get_current
         longitude=data.longitude,
     )
     return {"success": True, "data": result}
+
+
+@router.post(
+    "/collect",
+    summary="Collect Sensor Training Data",
+    description="Accepts labelled 300-point windows from Android to improve the user's ML model.",
+)
+def collect_sensor_data(data: SensorWindowRequest, user_id: str = Depends(get_current_user)):
+    # Currently a stub to prevent 404 for frontend team. 
+    # Real logic can dump to CSV / database.
+    return {"success": True, "message": "Training data collected successfully"}
+

@@ -30,28 +30,44 @@ if _IS_SQLITE:
         poolclass=NullPool,
     )
 else:
-    # PostgreSQL (Render / production):
-    # - pool_size=5      : keep 5 persistent connections (matches Render free tier)
-    # - max_overflow=10  : allow 10 burst connections under load
-    # - pool_recycle=280 : recycle before Render's 300s idle timeout kills them
-    # - pool_timeout=20  : raise instead of hanging 30s when pool is exhausted
-    # - pool_pre_ping    : validate connection before use (catches dead sockets)
-    # - statement_timeout: kill hung PG queries after 15s so they release the connection
+    # PostgreSQL (Supabase / Production):
+    # - Using port 6543 (Transaction Pooler):
+    #   We MUST use NullPool because the Supabase pooler handles the actual
+    #   connection pooling. SQLAlchemy's local QueuePool conflicts with it,
+    #   causing "SSL connection has been closed unexpectedly" errors.
+    # - pool_pre_ping: validate before use (still good practice)
+    # - sslmode=require: enforced for Supabase pooler connections.
+    # - connect_timeout: prevent hanging on initial handshake.
     engine = create_engine(
         DATABASE_URL,
         pool_pre_ping=True,
-        pool_size=5,
-        max_overflow=10,
-        pool_recycle=280,
-        pool_timeout=20,
-        connect_args={"options": "-c statement_timeout=15000"},  # 15s PG statement timeout
+        poolclass=NullPool,
+        connect_args={
+            "sslmode": "require",
+            "connect_timeout": 10
+        },
     )
+
+from contextvars import ContextVar
+import uuid
+
+# ContextVar-based scope function — ensures each request gets a unique session,
+# even when FastAPI switches threads or uses a threadpool.
+_session_id = ContextVar("session_id", default=None)
+
+def _get_session_id():
+    # If no ID exists in context, create one. The middleware in main.py
+    # will initialize this for every HTTP request.
+    sid = _session_id.get()
+    if sid is None:
+        sid = str(uuid.uuid4())
+        _session_id.set(sid)
+    return sid
 
 _SessionFactory = sessionmaker(bind=engine, autoflush=True, autocommit=False)
 
-# Thread-local scoped session — each request/thread gets its own isolated session.
-# This mirrors Flask-SQLAlchemy's behaviour so services need no changes.
-ScopedSession = scoped_session(_SessionFactory)
+# Scoped session using our ContextVar scope — isolation per request.
+ScopedSession = scoped_session(_SessionFactory, scopefunc=_get_session_id)
 
 
 

@@ -108,8 +108,13 @@ async def location_update(sid, data):
         from app.database import ScopedSession
         from fastapi.concurrency import run_in_threadpool
         
-        # update_location is sync/blocking (DB commit), so we run it in a threadpool
-        await run_in_threadpool(update_location, user_id, lat, lng, is_sharing, accuracy)
-        await run_in_threadpool(ScopedSession.remove)
+        def _update_and_cleanup():
+            try:
+                update_location(user_id, lat, lng, is_sharing, accuracy)
+            finally:
+                ScopedSession.remove()
+        
+        # Run both the DB update and cleanup in the same thread to ensure ContextVar matches
+        await run_in_threadpool(_update_and_cleanup)
     except Exception as e:
         logger.error(f"Failed to save location from socket: {e}")

@@ -107,7 +107,8 @@ def analyze_sensor_data(user_id, sensor_type, readings, sensitivity):
     confidence_danger = min(max_mag / 30.0, 1.0)
     
     thresholds = {"high": 0.35, "medium": 0.60, "low": 0.85}
-    threshold = thresholds.get(sensitivity.lower(), 0.60)
+    s_key = (sensitivity or "medium").lower()
+    threshold = thresholds.get(s_key, 0.60)
     is_danger = confidence_danger >= threshold
 
     if is_danger:
@@ -228,3 +229,12 @@ def predict_from_window(user_id, window_data, sensor_type='accelerometer', locat
         response["sos_sent"] = False
 
     return response
+
+
+def submit_sos_feedback(user_id, alert_id, is_false_alarm=True):
+    """
+    Stub for submitting feedback on an SOS trigger.
+    Previously handled ML dataset updates; now just logs.
+    """
+    logger.info(f"Feedback received for alert {alert_id} (user={user_id}): false_alarm={is_false_alarm}")
+    return True

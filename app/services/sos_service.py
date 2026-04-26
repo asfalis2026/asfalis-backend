@@ -123,19 +123,13 @@ def trigger_sos(user_id, lat, lng, trigger_type='manual', trigger_prefix=None, t
             if alert_obj and alert_obj.status == 'countdown':
                 logger = logging.getLogger(__name__)
                 logger.info(f"[auto-dispatch] Alert {aid} still in countdown after {delay}s — dispatching now.")
-                # dispatch_sos operates on ScopedSession internally; remove our
-                # local reference first so it gets a fresh thread-local session.
-                ScopedSession.remove()
                 dispatch_sos(aid)
-            else:
-                ScopedSession.remove()
         except Exception as exc:
-            logging.getLogger(__name__).error(
-                f"[auto-dispatch] Failed for alert {aid}: {exc}"
-            )
+            logging.getLogger(__name__).error(f"[auto-dispatch] Failed for alert {aid}: {exc}")
+        finally:
             try:
-                from app.database import ScopedSession as _S
-                _S.remove()
+                from app.database import ScopedSession
+                ScopedSession.remove()
             except Exception:
                 pass
 

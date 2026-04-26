@@ -124,14 +124,19 @@ app.add_middleware(
 # ── DB session cleanup middleware ─────────────────────────────────────────────
 @app.middleware("http")
 async def db_session_middleware(request: Request, call_next):
+    from app.database import _session_id
+    import uuid
+    # Set a unique session ID for this request context BEFORE running the route.
+    # The synchronous route in the threadpool will inherit this ContextVar.
+    token = _session_id.set(str(uuid.uuid4()))
     try:
         response = await call_next(request)
         return response
     finally:
-        # ALWAYS return the connection to the pool — even on 500 crashes.
-        # Without this guard, an exception in call_next skips remove() and
-        # permanently leaks the connection (contributes to QueuePool exhaustion).
+        # Now remove() will target the exact session used by the route.
         ScopedSession.remove()
+        # Reset the ContextVar to prevent cross-request leakage in the event loop.
+        _session_id.reset(token)
 
 
 # ── Global exception handler ──────────────────────────────────────────────────

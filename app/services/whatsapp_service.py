@@ -28,23 +28,37 @@ TRIGGER_TYPE_LABELS = {
 }
 
 
-def _build_sos_body(user_name, trigger_type, trigger_reason, maps_link):
+def _build_sos_body(user_name, trigger_type, trigger_reason, maps_link, sos_message=None, user_phone=None):
     label = TRIGGER_TYPE_LABELS.get(trigger_type, f"SOS ({trigger_type})")
     lines = [
         "🚨 *EMERGENCY ALERT* 🚨",
         "",
         f"*{user_name}* needs help!",
+    ]
+
+    if sos_message:
+        lines += ["", f"*Message:* {sos_message}"]
+
+    lines += [
         "",
         f"*Trigger:* {label}",
     ]
+
     if trigger_reason:
         lines.append(f"*Reason:* {trigger_reason}")
+
+    if user_phone:
+        lines += ["", f"📞 *Call {user_name}:* {user_phone}"]
+
     if maps_link:
         lines += ["", f"📍 *Location:* {maps_link}"]
     else:
         lines += ["", "📍 *Location:* Not available"]
+
     lines += ["", "Please check on them immediately.", "— Asfalis Safety App"]
     return "\n".join(lines)
+
+
 
 
 def send_whatsapp_sync(to_number, message, app_ctx=None):

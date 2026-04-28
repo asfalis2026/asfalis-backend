@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from app.extensions import db
 from app.models.user import User
 from app.models.trusted_contact import TrustedContact
-from app.schemas.user_schema import UpdateProfileRequest, FCMTokenRequest
+from app.schemas.user_schema import UpdateProfileRequest, FCMTokenRequest, SOSMessageUpdateRequest
 from app.dependencies import get_current_user
 
 logger = logging.getLogger(__name__)
@@ -87,21 +87,39 @@ def update_fcm_token(data: FCMTokenRequest, user_id: str = Depends(get_current_u
 
 
 @router.put("/sos-message")
-def update_sos_message(body: dict, user_id: str = Depends(get_current_user)):
-    sos_message = body.get('sos_message')
-    if not sos_message or not sos_message.strip():
-        raise HTTPException(400, detail={"code": "VALIDATION_ERROR",
-                                         "message": "sos_message cannot be empty."})
-    if len(sos_message) > 500:
-        raise HTTPException(400, detail={"code": "VALIDATION_ERROR",
-                                         "message": "SOS message too long (max 500 chars)."})
-
+def update_sos_message(data: SOSMessageUpdateRequest, user_id: str = Depends(get_current_user)):
     user = db.session.get(User, user_id)
     if not user:
         raise HTTPException(404, detail={"code": "NOT_FOUND", "message": "User not found."})
-    user.sos_message = sos_message.strip()
+
+    if data.sos_message is not None:
+        user.sos_message = data.sos_message.strip()
+        if user.settings:
+            user.settings.sos_message = data.sos_message.strip()
+
+    if data.shake_sensitivity is not None:
+        if data.shake_sensitivity not in ('low', 'medium', 'high'):
+            raise HTTPException(400, detail={"code": "VALIDATION_ERROR",
+                                             "message": "Invalid shake_sensitivity. Must be low, medium, or high."})
+        if not user.settings:
+            from app.models.settings import UserSettings
+            user.settings = UserSettings(
+                user_id=user.id,
+                emergency_number="",
+                sos_message=user.sos_message or "Emergency!"
+            )
+            db.session.add(user.settings)
+        user.settings.shake_sensitivity = data.shake_sensitivity
+
     db.session.commit()
-    return {"success": True, "message": "SOS message updated.", "data": {"sos_message": user.sos_message}}
+    return {
+        "success": True,
+        "message": "SOS preferences updated.",
+        "data": {
+            "sos_message": user.sos_message,
+            "shake_sensitivity": user.settings.shake_sensitivity if user.settings else None
+        }
+    }
 
 
 @router.delete("/account")

@@ -163,6 +163,7 @@ def dispatch_sos(alert_id, user_id=None):
         return False, f"Alert cannot be dispatched from state: {alert.status}", []
 
     user = db.session.get(User, alert.user_id)
+    user_message = user.sos_message
     contacts = TrustedContact.query.filter_by(user_id=user.id).all()
 
     # Warn if none are app-verified (contact joined Twilio sandbox ≠ app OTP verified)
@@ -188,7 +189,11 @@ def dispatch_sos(alert_id, user_id=None):
         trigger_type=alert.trigger_type,
         trigger_reason=alert.trigger_reason,
         maps_link=maps_link,
+        sos_message=alert.sos_message,
+        user_phone=user.phone,
     )
+
+
 
     contacted = []
     delivery_report = []  # per-contact Twilio delivery status

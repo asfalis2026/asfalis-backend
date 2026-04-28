@@ -13,3 +13,9 @@ class UpdateProfileRequest(BaseModel):
 
 class FCMTokenRequest(BaseModel):
     fcm_token: str
+
+
+class SOSMessageUpdateRequest(BaseModel):
+    sos_message: Optional[str] = Field(None, min_length=1, max_length=500)
+    shake_sensitivity: Optional[str] = None  # low, medium, high
+

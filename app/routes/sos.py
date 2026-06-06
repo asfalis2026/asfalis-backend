@@ -120,12 +120,40 @@ def send_sos_now(body: dict, user_id: str = Depends(get_current_user)):
     if not success:
         raise HTTPException(400, detail={"code": "DISPATCH_ERROR", "message": msg})
 
+    # Build a cleaner delivery report for frontend
+    clean_report = []
+    for r in delivery_report:
+        # Determine if message was actually delivered
+        delivered = r["success"] and r["status"] in ("sent", "queued", "delivered")
+
+        # Friendly error message
+        if r["success"]:
+            status_display = "✅ Message sent"
+        elif r["status"] == "not_in_sandbox":
+            status_display = "❌ Contact not in WhatsApp sandbox (they need to text 'join' to the sandbox number)"
+        elif r["status"] == "not_opted_in":
+            status_display = "❌ Contact hasn't opted in to receive messages"
+        elif r["status"] == "rate_limited":
+            status_display = "❌ Twilio sandbox daily limit exceeded"
+        elif r["status"] == "not_configured":
+            status_display = "❌ Twilio not configured"
+        else:
+            status_display = f"❌ Failed: {r.get('error_msg', r['status'])}"
+
+        clean_report.append({
+            "phone": r["phone"],
+            "delivered": delivered,
+            "status": status_display,
+            "twilio_sid": r.get("sid"),
+            "error_code": r.get("error_code"),
+        })
+
     # Return the result - status will be 'sent' or 'failed'
     return {
         "success": True,
         "message": msg,
         "data": {
-            "delivery_report": delivery_report,
+            "delivery_report": clean_report,
             "status": alert.status if alert else "unknown"
         }
     }

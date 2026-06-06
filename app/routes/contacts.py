@@ -9,19 +9,21 @@ import random
 import logging
 from datetime import datetime, timedelta
 from fastapi import APIRouter, Depends, HTTPException, Request
+from slowapi import Limiter
+from slowapi.util import get_remote_address
 
 from app.extensions import db
 from app.models.trusted_contact import TrustedContact
 from app.models.otp import OTPRecord
-from app.models.user import User
 from app.schemas.contact_schema import ContactRequest
 from app.config import Config, settings
 from app.dependencies import get_current_user
 from app.utils.encryption import compute_hmac
-from app.services.sms_service import send_contact_verification_otp, send_contact_welcome_sms
+from app.services.sms_service import send_contact_verification_otp
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+limiter = Limiter(key_func=get_remote_address)
 
 
 @router.get("")
@@ -31,7 +33,8 @@ def get_contacts(user_id: str = Depends(get_current_user)):
 
 
 @router.post("", status_code=200)
-def add_contact(data: ContactRequest, user_id: str = Depends(get_current_user)):
+@limiter.limit("10/minute")
+def add_contact(request: Request, data: ContactRequest, user_id: str = Depends(get_current_user)):
     count = TrustedContact.query.filter_by(user_id=user_id).count()
     if count >= int(Config.MAX_TRUSTED_CONTACTS or 5):
         raise HTTPException(400, detail={"code": "Limit Exceeded", "message": "Max trusted contacts reached."})
@@ -143,19 +146,32 @@ def verify_contact_otp(body: dict, user_id: str = Depends(get_current_user)):
         db.session.rollback()
         raise HTTPException(500, detail={"code": "INTERNAL_ERROR", "message": "Failed to verify contact."})
 
-    user = db.session.get(User, user_id)
-    sender_name = user.full_name if user else "Someone"
+    # New flow: Return sandbox instructions in response (no Twilio message sent)
+    # This reduces Twilio usage by 50% - the app handles showing the join message to user
     whatsapp_from = Config.TWILIO_WHATSAPP_FROM
     whatsapp_number = whatsapp_from.replace('whatsapp:', '') if whatsapp_from else None
     sandbox_code = Config.TWILIO_SANDBOX_CODE
-    if whatsapp_number and sandbox_code:
-        send_contact_welcome_sms(contact.phone, sender_name, whatsapp_number, sandbox_code)
 
-    return {"success": True, "message": "Contact verified.", "data": contact.to_dict()}
+    # Build sandbox instructions for the app to display
+    sandbox_instructions = None
+    if whatsapp_number and sandbox_code:
+        sandbox_instructions = {
+            "whatsapp_number": whatsapp_number,
+            "sandbox_code": sandbox_code,
+            "message": f"Send '{sandbox_code}' to {whatsapp_number} on WhatsApp to receive SOS alerts."
+        }
+
+    return {
+        "success": True,
+        "message": "Contact verified.",
+        "data": contact.to_dict(),
+        "sandbox_instructions": sandbox_instructions
+    }
 
 
 @router.post("/resend-otp")
-def resend_contact_otp(body: dict, user_id: str = Depends(get_current_user)):
+@limiter.limit("5/minute")
+def resend_contact_otp(request: Request, body: dict, user_id: str = Depends(get_current_user)):
     contact_id = body.get('contact_id')
     if not contact_id:
         raise HTTPException(400, detail={"code": "VALIDATION_ERROR", "message": "contact_id required."})

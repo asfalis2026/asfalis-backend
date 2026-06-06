@@ -11,13 +11,19 @@ def validate_phone(phone):
 
 def validate_password(password):
     """
-    Min 8 chars, 1 uppercase, 1 number.
+    Strong password validation:
+    - Minimum 8 characters
+    - At least 1 uppercase letter
+    - At least 1 lowercase letter
+    - At least 1 digit
+    - At least 1 special character (optional but recommended)
     """
-    if len(password) < 6:
+    if len(password) < 8:
         return False
-    # Relaxed rules for development
-    # if not re.search(r"[A-Z]", password):
-    #     return False
+    if not re.search(r"[A-Z]", password):
+        return False
+    if not re.search(r"[a-z]", password):
+        return False
     if not re.search(r"\d", password):
         return False
     return True

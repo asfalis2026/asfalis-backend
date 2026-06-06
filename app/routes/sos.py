@@ -113,9 +113,22 @@ def trigger_sos_route(data: TriggerSOSRequest, user_id: str = Depends(get_curren
 def send_sos_now(body: dict, user_id: str = Depends(get_current_user)):
     alert_id = body.get('alert_id')
     success, msg, delivery_report = dispatch_sos(alert_id, user_id)
+
+    # Get the alert to check its final status
+    alert = SOSAlert.query.get(alert_id)
+
     if not success:
         raise HTTPException(400, detail={"code": "DISPATCH_ERROR", "message": msg})
-    return {"success": True, "message": msg, "data": {"delivery_report": delivery_report}}
+
+    # Return the result - status will be 'sent' or 'failed'
+    return {
+        "success": True,
+        "message": msg,
+        "data": {
+            "delivery_report": delivery_report,
+            "status": alert.status if alert else "unknown"
+        }
+    }
 
 
 @router.post(
@@ -178,10 +191,20 @@ def get_sos_history(user_id: str = Depends(get_current_user)):
         .order_by(SOSAlert.triggered_at.desc()).all()
     user = db.session.get(User, user_id)
     country = user.country if user else None
-    return {"success": True, "data": [
-        {**alert.to_dict(), "triggered_at": format_datetime_for_response(alert.triggered_at, country)}
-        for alert in alerts
-    ]}
+
+    # Build response with additional failure details
+    data = []
+    for alert in alerts:
+        alert_dict = alert.to_dict()
+        alert_dict["triggered_at"] = format_datetime_for_response(alert.triggered_at, country)
+
+        # Include delivery report info for sent/failed alerts
+        if alert.status in ['sent', 'failed'] and alert.message_sids:
+            alert_dict["message_sids"] = alert.message_sids
+
+        data.append(alert_dict)
+
+    return {"success": True, "data": data}
 
 
 @router.get("/countdown/{alert_id}")

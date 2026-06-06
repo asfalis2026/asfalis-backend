@@ -1,9 +1,8 @@
-# whatsapp_service.py — no Flask dependencies; JWT handling lives in app/routes/auth.py
+# whatsapp_service.py — WhatsApp messaging for SOS alerts
 from app.config import settings
 from twilio.rest import Client
 from twilio.base.exceptions import TwilioRestException
 import logging
-import threading
 
 logger = logging.getLogger(__name__)
 
@@ -59,10 +58,16 @@ def _build_sos_body(user_name, trigger_type, trigger_reason, maps_link, sos_mess
     return "\n".join(lines)
 
 
+def send_whatsapp_sync(to_number, message):
+    """Send a WhatsApp message synchronously and return a delivery report.
 
-
-def send_whatsapp_sync(to_number, message, app_ctx=None):
-    """Send a WhatsApp message synchronously and return a delivery report."""
+    Returns a dict with keys:
+      - success: bool - whether the message was sent
+      - sid: str or None - Twilio Message SID (for tracking status callbacks)
+      - status: str - status string for delivery report
+      - error_code: int or None - Twilio error code if failed
+      - error_msg: str or None - error message if failed
+    """
     account_sid = settings.TWILIO_WA_ACCOUNT_SID or settings.TWILIO_ACCOUNT_SID
     auth_token  = settings.TWILIO_WA_AUTH_TOKEN  or settings.TWILIO_AUTH_TOKEN
     whatsapp_from = settings.TWILIO_WHATSAPP_FROM
@@ -76,7 +81,12 @@ def send_whatsapp_sync(to_number, message, app_ctx=None):
 
     try:
         client = Client(account_sid, auth_token)
-        msg = client.messages.create(from_=whatsapp_from, body=message, to=to_wa)
+        msg = client.messages.create(
+            from_=whatsapp_from,
+            body=message,
+            to=to_wa,
+            status_callback=settings.TWILIO_STATUS_CALLBACK_URL  # Enable status callbacks
+        )
         logger.info(f"WhatsApp sent to {to_number}: {msg.sid} (status={msg.status})")
         return {"success": True, "sid": msg.sid, "status": "sent",
                 "error_code": None, "error_msg": None}
@@ -91,22 +101,6 @@ def send_whatsapp_sync(to_number, message, app_ctx=None):
         logger.error(f"Unexpected error sending WhatsApp to {to_number}: {e}")
         return {"success": False, "sid": None, "status": "unknown_error",
                 "error_code": None, "error_msg": str(e)}
-
-
-def send_whatsapp_alert(to_number, message):
-    """Fire-and-forget WhatsApp alert (non-blocking)."""
-    try:
-        def _send():
-            send_whatsapp_sync(to_number, message)
-
-        t = threading.Thread(target=_send, daemon=True)
-        t.start()
-        logger.info(f"WhatsApp alert dispatch started for {to_number}")
-        return "dispatched"
-
-    except Exception as e:
-        logger.error(f"Failed to dispatch WhatsApp alert: {e}")
-        return None
 
 
 def send_safe_notification(user_full_name, contact_phone, safe_time_display: str, timezone_label: str | None = None):

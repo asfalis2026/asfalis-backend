@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, DateTime, Text, Enum, ForeignKey
+from sqlalchemy import Column, String, DateTime, Text, Enum, ForeignKey, JSON
 from datetime import datetime
 import uuid
 
@@ -13,7 +13,7 @@ class SOSAlert(Base):
     user_id = Column(String(36), ForeignKey('users.id'), nullable=False)
     # ── Non-sensitive operational fields (stored in plaintext) ────────────────
     trigger_type = Column(Enum('manual', 'auto_fall', 'auto_shake', 'bracelet', 'iot_button', 'hardware_distress', name='trigger_type_enum'), nullable=False)
-    status = Column(Enum('countdown', 'sent', 'cancelled', 'resolved', name='sos_status_enum'), nullable=False)
+    status = Column(Enum('countdown', 'sent', 'cancelled', 'resolved', 'failed', name='sos_status_enum'), nullable=False)
     triggered_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     sent_at = Column(DateTime, nullable=True)
     resolved_at = Column(DateTime, nullable=True)
@@ -26,6 +26,9 @@ class SOSAlert(Base):
     sos_message = Column(EncryptedString(), nullable=False)
     # contacted_numbers is a list of phone numbers / names — encrypted as JSON blob
     contacted_numbers = Column(EncryptedJSON(), nullable=False)
+    # message_sids stores mapping of phone -> Twilio Message SID for webhook tracking
+    # Not encrypted since Twilio SIDs are not sensitive
+    message_sids = Column(JSON, nullable=True)
 
     def to_dict(self):
         # TypeDecorator auto-decrypts on attribute access — returns plaintext

@@ -14,8 +14,8 @@ Encryption note:
 import uuid
 import logging
 from datetime import datetime, timezone, timedelta
-from typing import Optional
-
+from slowapi import Limiter
+from slowapi.util import get_remote_address
 from fastapi import APIRouter, Depends, Request, HTTPException
 from jose import jwt as jose_jwt
 
@@ -35,8 +35,6 @@ from app.utils.validators import validate_password
 from app.utils.otp import store_otp, verify_otp, generate_otp
 from app.utils.encryption import compute_hmac
 from app.services.sms_service import send_otp_sms
-from slowapi import Limiter
-from slowapi.util import get_remote_address
 import bcrypt
 
 logger = logging.getLogger(__name__)
@@ -90,7 +88,8 @@ def validate_token(user_id: str = Depends(get_current_user)):
 # ─── Registration ───────────────────────────────────────────────────────────
 
 @router.post("/register/phone", status_code=201)
-def register_phone(data: PhoneRegisterRequest):
+@limiter.limit("5/minute")
+def register_phone(request: Request, data: PhoneRegisterRequest):
     phone = data.phone_number
     # Lookup via HMAC index — phone column is encrypted, direct equality won't work
     p_hmac = compute_hmac(phone)
@@ -100,7 +99,7 @@ def register_phone(data: PhoneRegisterRequest):
 
     if not validate_password(data.password):
         raise HTTPException(400, detail={"code": "WEAK_PASSWORD",
-                                         "message": "Password must be at least 6 chars and contain a digit."})
+                                         "message": "Password must be at least 8 characters with uppercase, lowercase, and digit."})
 
     new_user = User(
         full_name=data.full_name,
@@ -136,7 +135,8 @@ def register_phone(data: PhoneRegisterRequest):
         "message": "Registration started. Please verify your phone number.",
         "data": {"user_id": new_user.id}
     }
-    if settings.DEBUG or send_result == "mock-sid":
+    # Only return OTP in DEBUG mode - never in production!
+    if settings.DEBUG:
         resp["data"]["otp_code"] = otp_code
     return resp
 
@@ -150,7 +150,8 @@ def register_alias_simple(data: PhoneRegisterRequest):
 # ─── Phone OTP verification ─────────────────────────────────────────────────
 
 @router.post("/verify-phone-otp")
-def verify_phone_otp(data: VerifyPhoneOTPRequest):
+@limiter.limit("10/minute")
+def verify_phone_otp(request: Request, data: VerifyPhoneOTPRequest):
     ok, msg = verify_otp(phone=data.phone_number, otp_code=data.otp_code, purpose='phone_verification')
     if not ok:
         raise HTTPException(400, detail={"code": "OTP_INVALID", "message": msg})
@@ -181,6 +182,7 @@ def verify_phone_otp(data: VerifyPhoneOTPRequest):
 # ─── Resend OTP ─────────────────────────────────────────────────────────────
 
 @router.post("/resend-otp")
+@limiter.limit("5/minute")
 def resend_otp(request: Request, data: ResendOTPRequest):
     # Lookup via HMAC index
     user = User.query.filter_by(phone_hmac=compute_hmac(data.phone_number)).first()
@@ -199,7 +201,12 @@ def resend_otp(request: Request, data: ResendOTPRequest):
 
 # ─── Login ───────────────────────────────────────────────────────────────────
 
+# Configuration for account lockout
+MAX_LOGIN_ATTEMPTS = 5
+LOCKOUT_MINUTES = 30
+
 @router.post("/login/phone")
+@limiter.limit("10/minute")
 def login_phone(request: Request, data: PhoneLoginRequest):
     # Lookup via HMAC index
     user = User.query.filter_by(phone_hmac=compute_hmac(data.phone_number)).first()
@@ -207,9 +214,40 @@ def login_phone(request: Request, data: PhoneLoginRequest):
         raise HTTPException(401, detail={"code": "INVALID_CREDENTIALS",
                                          "message": "Invalid phone number or password."})
 
+    # Check if account is locked
+    if user.is_locked():
+        remaining = user.get_lockout_remaining_seconds()
+        raise HTTPException(423, detail={
+            "code": "ACCOUNT_LOCKED",
+            "message": f"Account locked due to too many failed attempts. Try again in {remaining // 60} minutes.",
+            "locked_until": user.locked_until.isoformat() if user.locked_until else None,
+            "seconds_remaining": remaining
+        })
+
     if not user.password_hash or not _check_password(data.password, user.password_hash):
-        raise HTTPException(401, detail={"code": "INVALID_CREDENTIALS",
-                                         "message": "Invalid phone number or password."})
+        # Record failed login attempt
+        user.record_failed_login(max_attempts=MAX_LOGIN_ATTEMPTS, lockout_minutes=LOCKOUT_MINUTES)
+        db.session.commit()
+
+        if user.is_locked():
+            remaining = user.get_lockout_remaining_seconds()
+            raise HTTPException(423, detail={
+                "code": "ACCOUNT_LOCKED",
+                "message": f"Too many failed attempts. Account locked for {LOCKOUT_MINUTES} minutes.",
+                "locked_until": user.locked_until.isoformat() if user.locked_until else None,
+                "seconds_remaining": remaining,
+                "attempts_remaining": 0
+            })
+
+        attempts_left = MAX_LOGIN_ATTEMPTS - user.failed_login_attempts
+        raise HTTPException(401, detail={
+            "code": "INVALID_CREDENTIALS",
+            "message": "Invalid phone number or password.",
+            "attempts_remaining": attempts_left
+        })
+
+    # Successful login - reset failed attempts
+    user.reset_failed_logins()
 
     if not user.is_verified:
         raise HTTPException(403, detail={"code": "UNVERIFIED_PHONE",
@@ -348,6 +386,7 @@ def logout(data: RefreshTokenRequest):
 # ─── Forgot / Reset password ─────────────────────────────────────────────────
 
 @router.post("/forgot-password")
+@limiter.limit("5/minute")
 def forgot_password(request: Request, data: ForgotPasswordRequest):
     # Lookup via HMAC index
     user = User.query.filter_by(phone_hmac=compute_hmac(data.phone_number)).first()
@@ -366,7 +405,8 @@ def forgot_password(request: Request, data: ForgotPasswordRequest):
 
 
 @router.post("/reset-password")
-def reset_password(data: ResetPasswordRequest):
+@limiter.limit("10/minute")
+def reset_password(request: Request, data: ResetPasswordRequest):
     ok, msg = verify_otp(phone=data.phone_number, otp_code=data.otp_code, purpose='reset_password')
     if not ok:
         raise HTTPException(400, detail={"code": "OTP_INVALID", "message": msg})

@@ -16,7 +16,7 @@ class PhoneRegisterRequest(BaseModel):
     full_name: str = Field(..., min_length=2)
     phone_number: str
     country: str
-    password: str = Field(..., min_length=6)
+    password: str = Field(..., min_length=8)
 
     @field_validator('phone_number')
     @classmethod
@@ -67,7 +67,7 @@ class ForgotPasswordRequest(BaseModel):
 class ResetPasswordRequest(BaseModel):
     phone_number: str = Field(..., min_length=10)
     otp_code: str = Field(..., min_length=6, max_length=6)
-    new_password: str = Field(..., min_length=6)
+    new_password: str = Field(..., min_length=8)
 
 
 class RefreshTokenRequest(BaseModel):

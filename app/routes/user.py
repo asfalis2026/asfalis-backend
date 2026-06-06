@@ -134,6 +134,10 @@ def delete_account(user_id: str = Depends(get_current_user)):
 
 @router.delete("/{target_user_id}")
 def delete_user_by_id(target_user_id: str, user_id: str = Depends(get_current_user)):
+    # Authorization check: users can only delete their own account
+    if user_id != target_user_id:
+        raise HTTPException(403, detail={"code": "FORBIDDEN",
+                                         "message": "You can only delete your own account."})
     user = db.session.get(User, target_user_id)
     if not user:
         raise HTTPException(404, detail={"code": "NOT_FOUND", "message": "User not found."})

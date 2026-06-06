@@ -8,7 +8,7 @@ Encryption note:
 import logging
 from datetime import datetime
 from typing import Optional
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
 from app.extensions import db
@@ -144,14 +144,20 @@ def iot_button_event(data: ButtonEventRequest, user_id: str = Depends(get_curren
 
 
 @router.post("/alert")
-def device_alert(body: dict):
+def device_alert(request: Request, body: dict, user_id: str = Depends(get_current_user)):
+    """
+    Trigger SOS alert via device. Requires authentication.
+    The device must be registered and owned by the authenticated user.
+    """
     mac = body.get('device_mac')
     if not mac:
         raise HTTPException(400, detail={"code": "VALIDATION_ERROR", "message": "Missing MAC."})
-    # Lookup via HMAC index
-    device = ConnectedDevice.query.filter_by(mac_hmac=compute_hmac(mac)).first()
+
+    # Verify device belongs to authenticated user
+    device = ConnectedDevice.query.filter_by(mac_hmac=compute_hmac(mac), user_id=user_id).first()
     if not device:
-        raise HTTPException(404, detail={"code": "NOT_FOUND", "message": "Device not found."})
+        raise HTTPException(404, detail={"code": "NOT_FOUND", "message": "Device not found or not paired to your account."})
+
     from app.services.location_service import get_last_location
     last_loc = get_last_location(device.user_id)
     lat = last_loc.latitude if last_loc else 0.0
@@ -164,9 +170,9 @@ def device_alert(body: dict):
     "/cancel-sos",
     summary="Hardware Cancel SOS (Two-Click Bridge)",
     description=(
-        "**Hardware-only bridge endpoint** — No auth token required.\n\n"
+        "**Hardware bridge endpoint** — Requires authentication.\n\n"
         "Called by the mobile app on behalf of the bracelet after a two-click hardware "
-        "cancel signal. Identifies the user via `device_mac` and cancels the latest active "
+        "cancel signal. Identifies the user via device MAC and cancels the latest active "
         "`countdown` or `sent` SOS alert.\n\n"
         "**Flow 1 & 3 (h/w cancel path)**:\n"
         "- Bracelet sends two clicks → App receives BLE event → App calls this endpoint\n"
@@ -175,15 +181,15 @@ def device_alert(body: dict):
         "**Body**: `{ \"device_mac\": \"AA:BB:CC:DD:EE:FF\" }`"
     ),
 )
-def hardware_cancel_sos(body: dict):
+def hardware_cancel_sos(request: Request, body: dict, user_id: str = Depends(get_current_user)):
     mac = body.get('device_mac')
     if not mac:
         raise HTTPException(400, detail={"code": "VALIDATION_ERROR", "message": "Missing device_mac."})
 
-    # Lookup via HMAC index
-    device = ConnectedDevice.query.filter_by(mac_hmac=compute_hmac(mac)).first()
+    # Verify device belongs to authenticated user
+    device = ConnectedDevice.query.filter_by(mac_hmac=compute_hmac(mac), user_id=user_id).first()
     if not device:
-        raise HTTPException(404, detail={"code": "NOT_FOUND", "message": "Device not found or not paired."})
+        raise HTTPException(404, detail={"code": "NOT_FOUND", "message": "Device not found or not paired to your account."})
 
     # Find the latest active (countdown or sent) alert for this device's user
     active_alert = (

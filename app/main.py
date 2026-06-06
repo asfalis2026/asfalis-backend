@@ -21,6 +21,7 @@ import httpx
 from fastapi import FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
@@ -73,6 +74,9 @@ async def lifespan(application: FastAPI):
     logger.info("Application shutdown.")
 
 
+# ── Security ─────────────────────────────────────────────────────────────────
+security = HTTPBearer(auto_error=False)
+
 # ── FastAPI app ───────────────────────────────────────────────────────────────
 app = FastAPI(
     title="Asfalis Women Safety API",
@@ -105,20 +109,51 @@ app = FastAPI(
     lifespan=lifespan,
     docs_url="/docs",
     redoc_url="/redoc",
+    swagger_ui_oauth2_redirect_url="/docs/oauth2-redirect",
 )
 
 # Rate limiter state
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
-# CORS
+# CORS - Use environment variable for allowed origins, default to common localhosts
+def get_allowed_origins():
+    """Get allowed origins from environment or use defaults."""
+    env_origins = os.environ.get("ALLOWED_ORIGINS", "")
+    if env_origins:
+        return [origin.strip() for origin in env_origins.split(",") if origin.strip()]
+    # Default safe origins for development
+    return [
+        "http://localhost:3000",
+        "http://localhost:8080",
+        "http://127.0.0.1:3000",
+        "http://127.0.0.1:8080",
+    ]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=get_allowed_origins(),
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH"],
+    allow_headers=["Authorization", "Content-Type", "X-Requested-With"],
 )
+
+
+# ── Security headers middleware ─────────────────────────────────────────────────
+@app.middleware("http")
+async def security_headers_middleware(request: Request, call_next):
+    response = await call_next(request)
+
+    # Add security headers
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["X-XSS-Protection"] = "1; mode=block"
+    response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+
+    # Content Security Policy - restrictive default
+    response.headers["Content-Security-Policy"] = "default-src 'self'"
+
+    return response
 
 
 # ── DB session cleanup middleware ─────────────────────────────────────────────
@@ -202,7 +237,7 @@ socketio_app = socketio.ASGIApp(sio, other_asgi_app=app)
 
 # ── Register all routers ──────────────────────────────────────────────────────
 from app import models as _all_models  # ensure all models are registered for Base.metadata.create_all()
-from app.routes import auth, user, contacts, sos, protection, location, settings, device, support
+from app.routes import auth, user, contacts, sos, protection, location, settings, device, support, twilio
 
 app.include_router(auth.router,        prefix="/api/auth",       tags=["Auth"])
 app.include_router(user.router,        prefix="/api/user",       tags=["User"])
@@ -213,4 +248,43 @@ app.include_router(location.router,    prefix="/api/location",   tags=["Location
 app.include_router(settings.router,    prefix="/api/settings",   tags=["Settings"])
 app.include_router(device.router,      prefix="/api/device",     tags=["Device"])
 app.include_router(support.router,     prefix="/api/support",    tags=["Support"])
+app.include_router(twilio.router,      prefix="/api/twilio",    tags=["Twilio"])
+
+
+# ── Configure OpenAPI security scheme (must be after routers are registered) ─────
+# Store original openapi method and override to add security scheme
+_original_openapi = app.openapi
+
+# Public endpoints that don't require authentication
+PUBLIC_ENDPOINTS = {
+    # Auth endpoints
+    "/api/auth/login/phone", "/api/auth/verify-phone-otp", "/api/auth/resend-otp",
+    "/api/auth/refresh", "/api/auth/send-otp", "/api/auth/forgot-password",
+    "/api/auth/reset-password", "/api/auth/google", "/api/auth/validate",
+    # Health
+    "/health", "/docs", "/redoc", "/openapi.json",
+}
+
+def _custom_openapi():
+    schema = _original_openapi()
+    if "components" not in schema:
+        schema["components"] = {}
+    schema["components"]["securitySchemes"] = {
+        "Bearer": {
+            "type": "http",
+            "scheme": "bearer",
+            "description": "Enter your JWT token (the UI automatically adds 'Bearer ' prefix)",
+        }
+    }
+    # Apply security globally to all endpoints except public ones
+    for path in schema.get("paths", {}):
+        if path in PUBLIC_ENDPOINTS:
+            continue
+        for method in schema["paths"][path]:
+            if method in ["get", "post", "put", "delete", "patch"]:
+                if "security" not in schema["paths"][path][method]:
+                    schema["paths"][path][method]["security"] = [{"Bearer": []}]
+    return schema
+
+app.openapi = _custom_openapi
 

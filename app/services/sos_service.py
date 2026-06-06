@@ -12,16 +12,6 @@ COUNTDOWN_SECONDS = 10          # The live countdown window the app displays (se
 COUNTDOWN_EXPIRY_SECONDS = 60  # Backend stale-cleanup guard — cancel if still 'countdown' after 60s
 
 
-def _get_configured_cooldown():
-    """Fetch SOS cooldown from settings."""
-    value = getattr(settings, 'SOS_COOLDOWN_SECONDS', None)
-    if value is None:
-        return None
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return None
-
 def trigger_sos(user_id, lat, lng, trigger_type='manual', trigger_prefix=None, trigger_reason=None):
     # Auto-SOS (sensor-based): 10-minute cooldown via _sos_cooldown.
     # Manual SOS: 20-second double-tap guard via _manual_sos_cooldown.
@@ -146,6 +136,13 @@ def trigger_sos(user_id, lat, lng, trigger_type='manual', trigger_prefix=None, t
     return new_alert, "SOS countdown started", COUNTDOWN_SECONDS
 
 def dispatch_sos(alert_id, user_id=None):
+    """Dispatch an SOS alert by sending WhatsApp messages to all trusted contacts.
+
+    Returns:
+        tuple: (success: bool, message: str, delivery_report: list)
+    """
+    logger = logging.getLogger(__name__)
+
     alert = db.session.get(SOSAlert, alert_id)
     if not alert:
         return False, "Alert not found", []
@@ -153,13 +150,19 @@ def dispatch_sos(alert_id, user_id=None):
     if user_id and alert.user_id != user_id:
         return False, "Unauthorized: This alert does not belong to you", []
 
+    # Idempotency: check if already dispatched
     if alert.status in ['resolved', 'cancelled']:
         return False, "Alert already resolved/cancelled", []
 
     if alert.status == 'sent':
         return True, "SOS already dispatched", []
 
-    if alert.status != 'countdown':
+    # Idempotency: also check for 'failed' status - allow retry if previously failed
+    if alert.status == 'failed':
+        # Allow retry: we'll try to send again
+        logger.info(f"Retrying failed SOS alert {alert_id}")
+
+    if alert.status not in ['countdown', 'failed']:
         return False, f"Alert cannot be dispatched from state: {alert.status}", []
 
     user = db.session.get(User, alert.user_id)
@@ -169,14 +172,10 @@ def dispatch_sos(alert_id, user_id=None):
     # Warn if none are app-verified (contact joined Twilio sandbox ≠ app OTP verified)
     unverified = [c for c in contacts if not c.is_verified]
     if unverified:
-        logger = logging.getLogger(__name__)
         logger.warning(
             f"{len(unverified)} contact(s) for user {user.id} are not app-verified "
             "but will still receive the SOS alert."
         )
-
-    alert.status = 'sent'
-    alert.sent_at = datetime.utcnow()
 
     # Generate Google Maps link and structured message body
     maps_link = (
@@ -193,42 +192,85 @@ def dispatch_sos(alert_id, user_id=None):
         user_phone=user.phone,
     )
 
-
-
     contacted = []
     delivery_report = []  # per-contact Twilio delivery status
+    message_sids = {}  # phone -> message_sid mapping for webhook tracking
+    any_success = False
 
     for contact in contacts:
         contacted.append(contact.phone)
         result = send_whatsapp_sync(contact.phone, full_message)
+
+        # Store the message SID for webhook tracking
+        if result.get("sid"):
+            message_sids[contact.phone] = result["sid"]
+
         delivery_report.append({
             "phone":      contact.phone,
             "success":    result["success"],
             "status":     result["status"],
             "error_code": result["error_code"],
             "error_msg":  result["error_msg"],
+            "sid":        result.get("sid"),
         })
-        if not result["success"]:
-            _log = logging.getLogger(__name__)
-            _log.warning(
+
+        if result["success"]:
+            any_success = True
+        else:
+            logger.warning(
                 f"SOS delivery failed for {contact.phone} "
                 f"[{result['status']}] code={result['error_code']}: {result['error_msg']}"
             )
 
+    # Store message SIDs for webhook tracking
+    alert.message_sids = message_sids
     alert.contacted_numbers = contacted
+
+    # Determine final status based on delivery results
+    if not contacts:
+        # No contacts to notify - treat as sent (but no one to notify)
+        alert.status = 'sent'
+        alert.sent_at = datetime.utcnow()
+        summary = "SOS triggered but no contacts configured"
+    elif any_success:
+        # At least one message sent successfully
+        alert.status = 'sent'
+        alert.sent_at = datetime.utcnow()
+        failed = [r for r in delivery_report if not r["success"]]
+        sandbox_issues = [r for r in failed if r["status"] in ("not_in_sandbox", "not_opted_in")]
+        rate_limited = [r for r in failed if r["status"] == "rate_limited"]
+
+        summary = "SOS Dispatched via WhatsApp"
+        if rate_limited:
+            summary = (
+                f"SOS sent but Twilio sandbox daily limit exceeded! "
+                f"({len(rate_limited)} message(s) could not be delivered due to rate limit). "
+                "Please upgrade to a Twilio paid account for unlimited messages."
+            )
+            alert.status = 'failed'  # Mark as failed since limit exceeded
+        elif sandbox_issues:
+            summary += (
+                f" ({len(sandbox_issues)} contact(s) not in Twilio sandbox — "
+                "they must text the sandbox join keyword first)"
+            )
+        elif failed:
+            summary += f" ({len(failed)} delivery failure(s) — check logs)"
+    else:
+        # All deliveries failed - mark as failed
+        alert.status = 'failed'
+        alert.sent_at = datetime.utcnow()
+
+        # Check if it's a rate limit issue
+        rate_limited = [r for r in delivery_report if r["status"] == "rate_limited"]
+        if rate_limited:
+            summary = (
+                "SOS dispatch failed - Twilio sandbox daily message limit exceeded! "
+                "Please upgrade to a Twilio paid account for unlimited WhatsApp messages."
+            )
+        else:
+            summary = "SOS dispatch failed - all WhatsApp messages failed to send"
+
     db.session.commit()
-
-    failed = [r for r in delivery_report if not r["success"]]
-    sandbox_issues = [r for r in failed if r["status"] in ("not_in_sandbox", "not_opted_in")]
-
-    summary = "SOS Dispatched via WhatsApp"
-    if sandbox_issues:
-        summary += (
-            f" ({len(sandbox_issues)} contact(s) not in Twilio sandbox — "
-            "they must text the sandbox join keyword first)"
-        )
-    elif failed:
-        summary += f" ({len(failed)} delivery failure(s) — check logs)"
 
     return True, summary, delivery_report
 

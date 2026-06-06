@@ -37,9 +37,7 @@ class Config:
     TWILIO_WA_AUTH_TOKEN = os.environ.get('TWILIO_WA_AUTH_TOKEN')
     TWILIO_WHATSAPP_FROM = os.environ.get('TWILIO_WHATSAPP_FROM', 'whatsapp:+14155238886')
     TWILIO_SANDBOX_CODE = os.environ.get('TWILIO_SANDBOX_CODE', 'join something-popular')
-    # Callback URL for Twilio status webhooks - should be your public URL + /api/twilio/webhook
-    TWILIO_STATUS_CALLBACK_URL = os.environ.get('TWILIO_STATUS_CALLBACK_URL')
-    
+
     # Flask-Limiter Storage (in-memory)
     RATELIMIT_STORAGE_URI = os.environ.get('RATELIMIT_STORAGE_URI', 'memory://')
     RATELIMIT_SWALLOW_ERRORS = True

@@ -12,7 +12,7 @@ class SOSAlert(Base):
     id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     user_id = Column(String(36), ForeignKey('users.id'), nullable=False)
     # ── Non-sensitive operational fields (stored in plaintext) ────────────────
-    trigger_type = Column(Enum('manual', 'auto_fall', 'auto_shake', 'bracelet', 'iot_button', 'hardware_distress', name='trigger_type_enum'), nullable=False)
+    trigger_type = Column(Enum('manual', 'auto_fall', 'auto_fall_silence', 'auto_shake', 'bracelet', 'iot_button', 'hardware_distress', name='trigger_type_enum'), nullable=False)
     status = Column(Enum('countdown', 'sent', 'cancelled', 'resolved', 'failed', name='sos_status_enum'), nullable=False)
     triggered_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     sent_at = Column(DateTime, nullable=True)

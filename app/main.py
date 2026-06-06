@@ -237,7 +237,7 @@ socketio_app = socketio.ASGIApp(sio, other_asgi_app=app)
 
 # ── Register all routers ──────────────────────────────────────────────────────
 from app import models as _all_models  # ensure all models are registered for Base.metadata.create_all()
-from app.routes import auth, user, contacts, sos, protection, location, settings, device, support, twilio
+from app.routes import auth, user, contacts, sos, protection, location, settings, device, support
 
 app.include_router(auth.router,        prefix="/api/auth",       tags=["Auth"])
 app.include_router(user.router,        prefix="/api/user",       tags=["User"])
@@ -248,7 +248,6 @@ app.include_router(location.router,    prefix="/api/location",   tags=["Location
 app.include_router(settings.router,    prefix="/api/settings",   tags=["Settings"])
 app.include_router(device.router,      prefix="/api/device",     tags=["Device"])
 app.include_router(support.router,     prefix="/api/support",    tags=["Support"])
-app.include_router(twilio.router,      prefix="/api/twilio",    tags=["Twilio"])
 
 
 # ── Configure OpenAPI security scheme (must be after routers are registered) ─────

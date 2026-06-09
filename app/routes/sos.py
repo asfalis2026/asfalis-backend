@@ -142,6 +142,7 @@ def send_sos_now(body: dict, user_id: str = Depends(get_current_user)):
 
         clean_report.append({
             "phone": r["phone"],
+            "contact_name": r.get("contact_name"),  # Contact name for display
             "delivered": delivered,
             "status": status_display,
             "twilio_sid": r.get("sid"),

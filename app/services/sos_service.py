@@ -207,6 +207,7 @@ def dispatch_sos(alert_id, user_id=None):
 
         delivery_report.append({
             "phone":      contact.phone,
+            "contact_name": contact.name,  # Include contact name for frontend display
             "success":    result["success"],
             "status":     result["status"],
             "error_code": result["error_code"],

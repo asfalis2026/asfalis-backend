@@ -15,6 +15,7 @@ _SANDBOX_ERRORS = {
     20429: "rate_limited",
     21211: "invalid_number",
     21614: "not_a_mobile_number",
+    63038: "rate_limited",  # Daily message limit exceeded
 }
 
 TRIGGER_TYPE_LABELS = {

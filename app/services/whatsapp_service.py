@@ -84,8 +84,7 @@ def send_whatsapp_sync(to_number, message):
         msg = client.messages.create(
             from_=whatsapp_from,
             body=message,
-            to=to_wa,
-            status_callback=settings.TWILIO_STATUS_CALLBACK_URL  # Enable status callbacks
+            to=to_wa
         )
         logger.info(f"WhatsApp sent to {to_number}: {msg.sid} (status={msg.status})")
         return {"success": True, "sid": msg.sid, "status": "sent",

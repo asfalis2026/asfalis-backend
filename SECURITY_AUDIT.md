@@ -159,7 +159,7 @@ FIELD_ENCRYPTION_KEY=<fernet-key>
 FIELD_HMAC_KEY=<hmac-secret>
 
 # Security
-ALLOWED_ORIGINS=https://yourdomain.com,https://app.yourdomain.com
+ALLOWED_ORIGINS=https://asfalis.in,https://asfalis-backend.onrender.com
 DEBUG=false
 
 # Optional but recommended

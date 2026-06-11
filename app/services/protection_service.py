@@ -51,7 +51,7 @@ def toggle_protection(user_id, is_active):
     from app.models.settings import UserSettings
     settings_obj = UserSettings.query.filter_by(user_id=user_id).first()
     if not settings_obj:
-        settings_obj = UserSettings(user_id=user_id)
+        settings_obj = UserSettings(user_id=user_id, language='en')
         db.session.add(settings_obj)
 
     settings_obj.auto_sos_enabled = is_active

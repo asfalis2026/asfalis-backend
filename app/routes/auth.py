@@ -116,7 +116,8 @@ def register_phone(request: Request, data: PhoneRegisterRequest):
     db.session.add(UserSettings(
         user_id=new_user.id,
         emergency_number='911',
-        sos_message="Emergency! I need help. This is an automated SOS alert from Women Safety app. My live location is attached."
+        sos_message="Emergency! I need help. This is an automated SOS alert from Women Safety app. My live location is attached.",
+        language='en'
     ))
 
     # Generate and send OTP

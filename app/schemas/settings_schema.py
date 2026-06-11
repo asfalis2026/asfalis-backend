@@ -11,3 +11,4 @@ class SettingsUpdateRequest(BaseModel):
     battery_optimization: Optional[bool] = None
     haptic_feedback: Optional[bool] = None
     auto_sos_enabled: Optional[bool] = None
+    language: Optional[Literal['en', 'hin', 'ben']] = None

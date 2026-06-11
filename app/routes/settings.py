@@ -24,7 +24,7 @@ def update_settings(data: SettingsUpdateRequest, user_id: str = Depends(get_curr
         raise HTTPException(404, detail={"code": "NOT_FOUND", "message": "Settings not found."})
 
     update = data.model_dump(exclude_none=True)
-    for field in ('emergency_number', 'sos_message', 'shake_sensitivity', 'battery_optimization', 'haptic_feedback'):
+    for field in ('emergency_number', 'sos_message', 'shake_sensitivity', 'battery_optimization', 'haptic_feedback', 'language'):
         if field in update:
             setattr(settings_obj, field, update[field])
 

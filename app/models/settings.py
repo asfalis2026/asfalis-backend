@@ -19,6 +19,8 @@ class UserSettings(Base):
     battery_optimization = Column(Boolean, default=True)
     haptic_feedback = Column(Boolean, default=True)
     auto_sos_enabled = Column(Boolean, default=False, nullable=False)
+    # ── Language preference ───────────────────────────────────────────────────
+    language = Column(Enum('en', 'hin', 'ben', name='language_enum'), default='en', nullable=False)
     updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     def to_dict(self):
@@ -29,5 +31,6 @@ class UserSettings(Base):
             'shake_sensitivity': self.shake_sensitivity,
             'battery_optimization': self.battery_optimization,
             'haptic_feedback': self.haptic_feedback,
-            'auto_sos_enabled': self.auto_sos_enabled
+            'auto_sos_enabled': self.auto_sos_enabled,
+            'language': self.language
         }

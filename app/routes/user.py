@@ -106,7 +106,8 @@ def update_sos_message(data: SOSMessageUpdateRequest, user_id: str = Depends(get
             user.settings = UserSettings(
                 user_id=user.id,
                 emergency_number="",
-                sos_message=user.sos_message or "Emergency!"
+                sos_message=user.sos_message or "Emergency!",
+                language="en"
             )
             db.session.add(user.settings)
         user.settings.shake_sensitivity = data.shake_sensitivity

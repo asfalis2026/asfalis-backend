@@ -15,18 +15,17 @@ def send_sms(to, body):
 
         if not all([account_sid, auth_token, twilio_phone]):
             logger.warning("Twilio client not configured. Check TWILIO_* env vars.")
-            logger.info(f"[MOCK SMS] To={to} | Body={body}")
+            logger.info(f"[MOCK SMS] To={to} | OTP sent (body hidden)")
             return "mock-sid"
 
         def _send():
             try:
-                # client = Client(account_sid, auth_token)
-                # message = client.messages.create(body=body, from_=twilio_phone, to=to)
-                # logger.info(f"SMS sent to {to}: SID={message.sid}")
-                logger.info(f"[SMS DISABLED] To={to} | Body={body}")
+                client = Client(account_sid, auth_token)
+                message = client.messages.create(body=body, from_=twilio_phone, to=to)
+                logger.info(f"SMS sent to {to}: SID={message.sid}")
             except Exception as e:
                 logger.error(f"Twilio failed to send SMS to {to}: {e}")
-                logger.warning(f"[DEV FALLBACK] SMS body for {to}: {body}")
+                logger.warning(f"[DEV FALLBACK] OTP sent to {to} (body hidden)")
 
         t = threading.Thread(target=_send, daemon=True)
         t.start()
@@ -55,18 +54,17 @@ def send_sms_sync(to, body):
 
         if not all([account_sid, auth_token, twilio_phone]):
             logger.warning("Twilio not configured — cannot send SMS.")
-            logger.info(f"[MOCK SMS] To={to} | Body={body}")
+            logger.info(f"[MOCK SMS] To={to} | OTP sent (body hidden)")
             return False, "twilio_not_configured"
 
-        # client = Client(account_sid, auth_token)
-        # message = client.messages.create(body=body, from_=twilio_phone, to=to)
-        # logger.info(f"SMS sent to {to}: SID={message.sid}")
-        logger.info(f"[SMS SYNC DISABLED] To={to} | Body={body}")
-        return True, "mock-sid"
+        client = Client(account_sid, auth_token)
+        message = client.messages.create(body=body, from_=twilio_phone, to=to)
+        logger.info(f"SMS sent to {to}: SID={message.sid}")
+        return True, message.sid
 
     except Exception as e:
         logger.error(f"Twilio failed to send SMS to {to}: {e}")
-        logger.warning(f"[DEV FALLBACK] SMS body for {to}: {body}")
+        logger.warning(f"[DEV FALLBACK] OTP sent to {to} (body hidden)")
         return False, str(e)
 
 
